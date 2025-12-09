@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::storage::{ColumnDef, Value};
+use crate::storage::{ColumnDef, Value, ValueType};
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value as SQLValue};
 
 pub enum BinOp {
@@ -33,7 +33,7 @@ impl CompiledFilter {
     /// Collects all column indices referenced by this filter.
     ///
     /// Recursively traverses the filter tree and adds unique column indices to the output vector.
-    pub fn get_column_defs(&self, col_def_idxs: &mut Vec<usize>) {
+    pub fn get_column_indexes(&self, col_def_idxs: &mut Vec<usize>) {
         match self {
             CompiledFilter::Compare { col_idx, .. } => {
                 if !col_def_idxs.contains(col_idx) {
@@ -53,15 +53,15 @@ impl CompiledFilter {
                 }
             }
             CompiledFilter::And(left, right) => {
-                left.get_column_defs(col_def_idxs);
-                right.get_column_defs(col_def_idxs);
+                left.get_column_indexes(col_def_idxs);
+                right.get_column_indexes(col_def_idxs);
             }
             CompiledFilter::Or(left, right) => {
-                left.get_column_defs(col_def_idxs);
-                right.get_column_defs(col_def_idxs);
+                left.get_column_indexes(col_def_idxs);
+                right.get_column_indexes(col_def_idxs);
             }
             CompiledFilter::Not(filter) => {
-                filter.get_column_defs(col_def_idxs);
+                filter.get_column_indexes(col_def_idxs);
             }
             CompiledFilter::Column(col_idx) => {
                 if !col_def_idxs.contains(col_idx) {
@@ -103,20 +103,20 @@ impl CompiledFilter {
     ///     1. Column not found in table: `ColumnNotFound`.
     ///     2. Unsupported expression type: `UnsupportedFilter` or `InvalidSource`.
     ///     3. Value conversion fails: type conversion error.
-    pub fn compile(filter: Expr, table_column_defs: &[ColumnDef]) -> Result<Self> {
+    pub fn try_compile(filter: Expr, table_column_defs: &[ColumnDef]) -> Result<Self> {
         match filter {
             Expr::BinaryOp { op, left, right } => match op {
                 BinaryOperator::And => {
-                    let left = Self::compile(*left, table_column_defs)?;
+                    let left = Self::try_compile(*left, table_column_defs)?;
 
                     if let Self::Const(false) = left {
                         return Ok(Self::Const(false));
                     }
                     if let Self::Const(true) = left {
-                        return Self::compile(*right, table_column_defs);
+                        return Self::try_compile(*right, table_column_defs);
                     }
 
-                    let right = Self::compile(*right, table_column_defs)?;
+                    let right = Self::try_compile(*right, table_column_defs)?;
 
                     if let Self::Const(false) = right {
                         return Ok(Self::Const(false));
@@ -128,16 +128,16 @@ impl CompiledFilter {
                     Ok(Self::And(Box::new(left), Box::new(right)))
                 }
                 BinaryOperator::Or => {
-                    let left = Self::compile(*left, table_column_defs)?;
+                    let left = Self::try_compile(*left, table_column_defs)?;
 
                     if let Self::Const(true) = left {
                         return Ok(Self::Const(true));
                     }
                     if let Self::Const(false) = left {
-                        return Self::compile(*right, table_column_defs);
+                        return Self::try_compile(*right, table_column_defs);
                     }
 
-                    let right = Self::compile(*right, table_column_defs)?;
+                    let right = Self::try_compile(*right, table_column_defs)?;
 
                     if let Self::Const(true) = right {
                         return Ok(Self::Const(true));
@@ -184,8 +184,8 @@ impl CompiledFilter {
                             })
                         }
                         (Expr::Value(left), Expr::Value(right)) => {
-                            let left = parse_sql_value(left.value)?;
-                            let right = parse_sql_value(right.value)?;
+                            let left = Value::try_from_untyped(left.value)?;
+                            let right = Value::try_from_untyped(right.value)?;
 
                             Ok(Self::Const(Self::cmp_vals(&left, &right, &op)))
                         }
@@ -212,7 +212,7 @@ impl CompiledFilter {
             },
             Expr::UnaryOp { op, expr } => {
                 if let UnaryOperator::Not = op {
-                    Ok(Self::Not(Box::new(Self::compile(
+                    Ok(Self::Not(Box::new(Self::try_compile(
                         *expr,
                         table_column_defs,
                     )?))) // todo: create .flip to flip without additional Not
@@ -232,11 +232,18 @@ impl CompiledFilter {
                     )))
                 }
             }
-            Expr::Identifier(ident) => table_column_defs
-                .iter()
-                .position(|col_def| *col_def.name == ident.value)
-                .map(Self::Column)
-                .ok_or(Error::ColumnNotFound(ident.value.clone())),
+            Expr::Identifier(ident) => {
+                let col_idx = table_column_defs
+                    .iter()
+                    .position(|col_def| *col_def.name == ident.value)
+                    .ok_or(Error::ColumnNotFound(ident.value.clone()))?;
+
+                if table_column_defs[col_idx].field_type != ValueType::Bool {
+                    Ok(Self::Const(false))
+                } else {
+                    Ok(Self::Column(col_idx))
+                }
+            }
             expr => Err(Error::UnsupportedFilter(format!(
                 "Unsupported expression type in filter: {expr}"
             ))),
@@ -270,23 +277,5 @@ impl BinOp {
             Self::Eq => Self::Eq,
             Self::NotEq => Self::NotEq,
         }
-    }
-}
-
-fn parse_sql_value(value: SQLValue) -> Result<Value> {
-    match value {
-        SQLValue::Null => Ok(Value::Null),
-        SQLValue::SingleQuotedString(s)
-        | SQLValue::TripleSingleQuotedString(s)
-        | SQLValue::TripleDoubleQuotedString(s) => Ok(Value::String(s)),
-        SQLValue::Number(number, _) => {
-            Ok(Value::Int64(number.parse().map_err(|_| {
-                Error::InvalidSource(format!("Failed to parse number: {number}"))
-            })?))
-        }
-        SQLValue::Boolean(b) => Ok(Value::Bool(b)),
-        _ => Err(Error::InvalidSource(format!(
-            "Unsupported SQL value type: {value:?}"
-        ))),
     }
 }

@@ -1,7 +1,8 @@
 use crate::engines::{Engine, EngineConfig};
 use crate::error::{Error, Result};
-use crate::storage::{Column, ColumnDef, Value};
+use crate::storage::{ColumnDef, Value};
 
+use crate::sql::{OutputColumn, Projection, ProjectionValue};
 use std::cmp::Ordering;
 
 /// Standard engine for most needs.
@@ -23,17 +24,17 @@ impl Engine for MergeTreeEngine {
     /// Orders columns by sorting rows according to ORDER BY column definitions.
     ///
     /// Returns:
-    ///   * Ok: `Vec<Column>` with rows sorted in ascending order by ORDER BY columns.
+    ///   * Ok: `Vec<OutputColumn>` with rows sorted in ascending order by `ORDER BY` columns.
     ///   * Error when:
     ///     1. ORDER BY is empty or columns is empty: `NoColumnsSpecified`.
     ///     2. Column lengths mismatch: `InvalidColumnsSpecified`.
     ///     3. ORDER BY column not found: `InvalidColumnsSpecified`.
     fn order_columns(
         &self,
-        mut columns: Vec<Column>,
-        order_by: &[ColumnDef],
+        mut columns: Vec<OutputColumn>,
+        order_by: &[Projection],
         _primary_key: &[ColumnDef],
-    ) -> Result<Vec<Column>> {
+    ) -> Result<Vec<OutputColumn>> {
         if order_by.is_empty() || columns.is_empty() {
             return Err(Error::NoColumnsSpecified);
         }
@@ -45,11 +46,14 @@ impl Engine for MergeTreeEngine {
         }
 
         let mut order_by_indices = Vec::with_capacity(order_by.len());
-        for order_col in order_by {
-            let Some(idx) = columns
-                .iter()
-                .position(|col| col.column_def.name == order_col.name)
-            else {
+        for order_proj in order_by {
+            let Some(idx) = columns.iter().position(|col| {
+                if let ProjectionValue::ColumnDef(col_def) = &order_proj.source {
+                    col.column_def == *col_def
+                } else {
+                    false
+                }
+            }) else {
                 return Err(Error::InvalidColumnsSpecified);
             };
             order_by_indices.push(idx);
@@ -152,14 +156,23 @@ mod tests {
     #[test]
     fn test_single_row_single_column() {
         let engine = MergeTreeEngine::new(EngineConfig::default());
-        let columns = vec![Column {
+        let columns = vec![OutputColumn {
+            alias: None,
             column_def: str_col_def(),
             data: value!(S "1"),
+            is_virtual: true,
         }];
 
         assert_eq!(
             engine
-                .order_columns(columns.clone(), &[str_col_def()], &[str_col_def()])
+                .order_columns(
+                    columns.clone(),
+                    &[Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(str_col_def())
+                    }],
+                    &[str_col_def()]
+                )
                 .unwrap(),
             columns
         )
@@ -168,18 +181,29 @@ mod tests {
     #[test]
     fn test_multiple_row_single_column() {
         let engine = MergeTreeEngine::new(EngineConfig::default());
-        let columns = vec![Column {
+        let columns = vec![OutputColumn {
+            alias: None,
             column_def: int_col_def(),
             data: value!(I 1, 2, 4, 3, 2),
+            is_virtual: true,
         }];
 
         assert_eq!(
             engine
-                .order_columns(columns.clone(), &[int_col_def()], &[int_col_def()])
+                .order_columns(
+                    columns.clone(),
+                    &[Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(int_col_def())
+                    }],
+                    &[int_col_def()]
+                )
                 .unwrap(),
-            vec![Column {
+            vec![OutputColumn {
+                alias: None,
                 column_def: int_col_def(),
                 data: value!(I 1, 2, 2, 3, 4),
+                is_virtual: true
             }]
         );
     }
@@ -188,19 +212,30 @@ mod tests {
     fn test_single_row_multiple_column() {
         let engine = MergeTreeEngine::new(EngineConfig::default());
         let columns = vec![
-            Column {
+            OutputColumn {
+                alias: None,
                 column_def: int_col_def(),
                 data: value!(I 1),
+                is_virtual: true,
             },
-            Column {
+            OutputColumn {
+                alias: None,
                 column_def: str_col_def(),
                 data: value!(S "1"),
+                is_virtual: true,
             },
         ];
 
         assert_eq!(
             engine
-                .order_columns(columns.clone(), &[int_col_def()], &[int_col_def()])
+                .order_columns(
+                    columns.clone(),
+                    &[Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(int_col_def())
+                    }],
+                    &[int_col_def()]
+                )
                 .unwrap(),
             columns
         );
@@ -210,28 +245,43 @@ mod tests {
     fn test_multiple_row_multiple_column_eq() {
         let engine = MergeTreeEngine::new(EngineConfig::default());
         let columns = vec![
-            Column {
+            OutputColumn {
+                alias: None,
                 column_def: int_col_def(),
                 data: value!(I 1, 5, 3, 2, 4),
+                is_virtual: true,
             },
-            Column {
+            OutputColumn {
+                alias: None,
                 column_def: str_col_def(),
                 data: value!(S "1", "5", "3", "2", "4"),
+                is_virtual: true,
             },
         ];
 
         assert_eq!(
             engine
-                .order_columns(columns.clone(), &[int_col_def()], &[int_col_def()])
+                .order_columns(
+                    columns.clone(),
+                    &[Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(int_col_def())
+                    }],
+                    &[int_col_def()]
+                )
                 .unwrap(),
             vec![
-                Column {
+                OutputColumn {
+                    alias: None,
                     column_def: int_col_def(),
                     data: value!(I 1, 2, 3, 4, 5),
+                    is_virtual: true
                 },
-                Column {
+                OutputColumn {
+                    alias: None,
                     column_def: str_col_def(),
                     data: value!(S "1", "2", "3", "4", "5"),
+                    is_virtual: true
                 }
             ]
         )
@@ -241,13 +291,17 @@ mod tests {
     fn test_multiple_row_multiple_column_not_eq() {
         let engine = MergeTreeEngine::new(EngineConfig::default());
         let columns = vec![
-            Column {
+            OutputColumn {
+                alias: None,
                 column_def: int_col_def(),
                 data: value!(I 1, 2, 3, 2, 4),
+                is_virtual: true,
             },
-            Column {
+            OutputColumn {
+                alias: None,
                 column_def: str_col_def(),
                 data: value!(S "1", "5", "3", "2", "4"),
+                is_virtual: true,
             },
         ];
 
@@ -255,18 +309,31 @@ mod tests {
             engine
                 .order_columns(
                     columns.clone(),
-                    &[int_col_def(), str_col_def()],
+                    &[
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(int_col_def())
+                        },
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_col_def())
+                        },
+                    ],
                     &[int_col_def(), str_col_def()]
                 )
                 .unwrap(),
             vec![
-                Column {
+                OutputColumn {
+                    alias: None,
                     column_def: int_col_def(),
                     data: value!(I 1, 2, 2, 3, 4),
+                    is_virtual: true
                 },
-                Column {
+                OutputColumn {
+                    alias: None,
                     column_def: str_col_def(),
                     data: value!(S "1", "2", "5", "3", "4"),
+                    is_virtual: true
                 }
             ]
         )

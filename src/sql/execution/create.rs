@@ -1,8 +1,9 @@
 use crate::config::CONFIG;
 use crate::error::{Error, Result};
 use crate::runtime_config::{TABLE_DATA, TableConfig};
+use crate::sql::output_table::OutputTable;
 use crate::sql::{CommandRunner, validate_name};
-use crate::storage::{ColumnDef, OutputTable, TableDef};
+use crate::storage::{ColumnDef, TableDef};
 use crate::storage::{TableMetadata, TableSchema, TableSettings};
 use dashmap::Entry;
 use log::error;

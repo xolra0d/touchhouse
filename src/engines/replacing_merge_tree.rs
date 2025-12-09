@@ -1,6 +1,7 @@
 use crate::engines::{Engine, EngineConfig};
 use crate::error::{Error, Result};
-use crate::storage::{Column, ColumnDef};
+use crate::sql::{OutputColumn, Projection, ProjectionValue};
+use crate::storage::ColumnDef;
 use std::cmp::Ordering;
 
 /// Engine for editing rows. Sorts values in ASC order.
@@ -40,21 +41,27 @@ impl Engine for ReplacingMergeTreeEngine {
     /// based on PRIMARY KEY, keeping the row that appears last (newest).
     ///
     /// Returns:
-    ///   * Ok: `Vec<Column>` with sorted and deduplicated rows.
+    ///   * Ok: `Vec<OutputColumn>` with sorted and deduplicated rows.
     ///   * Error: `NoColumnsSpecified` if columns is empty.
     fn order_columns(
         &self,
-        mut columns: Vec<Column>,
-        order_by: &[ColumnDef],
+        mut columns: Vec<OutputColumn>,
+        order_by: &[Projection],
         primary_key: &[ColumnDef],
-    ) -> Result<Vec<Column>> {
+    ) -> Result<Vec<OutputColumn>> {
         let Some(total_rows) = columns.first().map(|col| col.data.len()) else {
             return Err(Error::NoColumnsSpecified);
         };
 
         let mut order_by_indexes = Vec::new();
-        for col_def in order_by {
-            let Some(position) = columns.iter().position(|col| &col.column_def == col_def) else {
+        for proj in order_by {
+            let Some(position) = columns.iter().position(|col| {
+                if let ProjectionValue::ColumnDef(col_def) = &proj.source {
+                    col.column_def == *col_def
+                } else {
+                    false
+                }
+            }) else {
                 continue;
             };
             order_by_indexes.push(position);
@@ -112,16 +119,18 @@ impl Engine for ReplacingMergeTreeEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Column, ColumnDef, Constraints, Value, ValueType};
+    use crate::storage::{ColumnDef, Constraints, Value, ValueType};
 
-    fn string_column(name: String, data: Vec<&str>) -> Column {
-        Column {
+    fn string_column(name: String, data: Vec<&str>) -> OutputColumn {
+        OutputColumn {
+            alias: None,
             column_def: ColumnDef {
                 name,
                 field_type: ValueType::String,
                 constraints: Constraints::default(),
             },
             data: data.iter().map(|x| Value::String(x.to_string())).collect(),
+            is_virtual: true,
         }
     }
 
@@ -134,11 +143,19 @@ mod tests {
         let col_1 = string_column("col_1".to_string(), vec!["a", "b", "b", "c", "a", "d", "b"]);
         let col_2 = string_column("col_2".to_string(), vec!["q", "w", "e", "d", "q", "w", "w"]);
         let col_3 = string_column("col_3".to_string(), vec!["1", "2", "3", "4", "5", "6", "7"]);
-
         let order_by = vec![
-            col_1.column_def.clone(),
-            col_2.column_def.clone(),
-            col_3.column_def.clone(),
+            Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(col_1.column_def.clone()),
+            },
+            Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(col_2.column_def.clone()),
+            },
+            Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(col_3.column_def.clone()),
+            },
         ];
         let primary_key = vec![col_1.column_def.clone(), col_2.column_def.clone()];
 
@@ -168,7 +185,16 @@ mod tests {
             vec!["old", "mid", "old", "new", "only", "newest"],
         );
 
-        let order_by = vec![col_1.column_def.clone(), col_2.column_def.clone()];
+        let order_by = vec![
+            Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(col_1.column_def.clone()),
+            },
+            Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(col_2.column_def.clone()),
+            },
+        ];
         let primary_key = vec![col_1.column_def.clone()];
 
         let merged = vec![

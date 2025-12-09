@@ -23,3 +23,10 @@ ClickHouse results:
 	
 	* Select:
 		Execution time: 20 ms
+
+SQLite results:
+	* Insert:
+		Execution time: 20 ms                                                                                                                                                                                                                                                                           
+
+	* Select:
+		Execution time: 430 ms

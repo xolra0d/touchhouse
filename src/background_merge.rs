@@ -40,7 +40,10 @@ impl BackgroundMerge {
 
             let mut new_part = match TablePart::try_new(
                 &merge_data.table_def,
-                merged,
+                merged
+                    .into_iter()
+                    .map(|col| col.to_output_column())
+                    .collect(),
                 Some(merge_data.part_1.name.clone()), // use latest name of two for proper future merging
             ) {
                 Ok(new_part) => new_part,

@@ -9,9 +9,12 @@ pub use crate::storage::compression::CompressionType;
 use crate::storage::table_metadata::TABLE_METADATA_FILENAME;
 pub use crate::storage::table_metadata::{TableMetadata, TableSchema, TableSettings};
 use crate::storage::table_part::MAGIC_BYTES_COLUMN;
-pub use crate::storage::table_part::{Mark, TablePart, TablePartInfo, load_all_parts_on_startup};
+pub use crate::storage::table_part::{
+    Mark, MarkInfo, TablePart, TablePartInfo, load_all_parts_on_startup,
+};
 pub use crate::storage::value::{Value, ValueType};
 
+use crate::sql::OutputColumn;
 use memmap2::{Advice, Mmap};
 use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::Serialize;
@@ -19,7 +22,7 @@ use sqlparser::ast::{ObjectName, ObjectNamePart};
 use std::fmt;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 #[derive(Debug, Clone, PartialEq, Serialize, RkyvSerialize, RkyvArchive, RkyvDeserialize)]
 pub struct Constraints {
@@ -45,10 +48,21 @@ pub struct ColumnDef {
     pub constraints: Constraints,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Column {
     pub column_def: ColumnDef,
     pub data: Vec<Value>,
+}
+
+impl Column {
+    pub fn to_output_column(self) -> OutputColumn {
+        OutputColumn {
+            alias: None,
+            column_def: self.column_def,
+            data: self.data,
+            is_virtual: true,
+        }
+    }
 }
 
 /// Tiny wrapper for implementing `std::io::Write` for `crc32fast::Hasher`.
@@ -141,44 +155,6 @@ impl Column {
         }
 
         Ok(())
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub struct OutputTable {
-    pub columns: Vec<Column>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_time: Option<Duration>,
-}
-
-impl OutputTable {
-    /// Creates new `OutputTable` with provided columns.
-    pub fn new(columns: Vec<Column>) -> Self {
-        Self {
-            columns,
-            execution_time: None,
-        }
-    }
-
-    /// Sets the execution time for this output table.
-    pub fn with_execution_time(mut self, duration: Duration) -> Self {
-        self.execution_time = Some(duration);
-        self
-    }
-
-    /// Builds a simple OK response table.
-    pub fn build_ok() -> Self {
-        Self {
-            columns: vec![Column {
-                column_def: ColumnDef {
-                    name: "OK".to_string(),
-                    field_type: ValueType::String,
-                    constraints: Constraints::default(),
-                },
-                data: vec![Value::String("OK".to_string())],
-            }],
-            execution_time: None,
-        }
     }
 }
 

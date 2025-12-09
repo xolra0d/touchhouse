@@ -5,6 +5,7 @@ use crate::storage::compression::{compress_bytes, decompress_bytes};
 use crate::storage::table_metadata::TableMetadata;
 use crate::storage::{Column, ColumnDef, CompressionType, TableDef, Value};
 
+use crate::sql::{OutputColumn, Projection, ProjectionValue};
 use log::{info, warn};
 use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use std::path::{Path, PathBuf};
@@ -16,14 +17,14 @@ pub const PART_INFO_FILENAME: &str = "part.inf";
 
 /// Represents a start byte position and end byte position of the
 /// compressed granule.
-#[derive(Debug, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize)]
+#[derive(Debug, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize, PartialEq)]
 pub struct MarkInfo {
     pub start: u64,
     pub end: u64,
 }
 
 /// Represents a first row of each granule as well as it's starting position and ending.
-#[derive(Debug, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize)]
+#[derive(Debug, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize, PartialEq)]
 pub struct Mark {
     pub index: Vec<Value>,
     pub info: Vec<MarkInfo>, // compression
@@ -55,7 +56,7 @@ impl TablePartInfo {
     ///
     /// Returns: Vec with data from specified granule or `CouldNotReadData` on failure
     pub fn get_granule_bytes_decompressed(
-        file: &[u8],
+        bytes: &[u8],
         mark_info: &MarkInfo,
         compression_type: &CompressionType,
     ) -> Result<Vec<u8>> {
@@ -66,15 +67,15 @@ impl TablePartInfo {
             )));
         }
 
-        if mark_info.end > file.len() as u64 {
+        if mark_info.end > bytes.len() as u64 {
             return Err(Error::CouldNotReadData(format!(
                 "Mark end ({}) exceeds file size ({})",
                 mark_info.end,
-                file.len()
+                bytes.len()
             )));
         }
 
-        let compressed = &file[(mark_info.start as usize)..(mark_info.end as usize)];
+        let compressed = &bytes[(mark_info.start as usize)..(mark_info.end as usize)];
 
         decompress_bytes(compressed, compression_type)
     }
@@ -185,7 +186,7 @@ impl TablePart {
     /// Returns: Self or engine error
     pub fn try_new(
         table_def: &TableDef,
-        columns: Vec<Column>,
+        columns: Vec<OutputColumn>,
         name: Option<String>,
     ) -> Result<Self> {
         if columns.is_empty() {
@@ -207,9 +208,23 @@ impl TablePart {
             .get_engine(EngineConfig::default());
         let data = engine.order_columns(
             columns,
-            &table_config.metadata.schema.order_by,
+            &table_config
+                .metadata
+                .schema
+                .order_by
+                .iter()
+                .map(|col_def| Projection {
+                    alias: None,
+                    source: ProjectionValue::ColumnDef(col_def.clone()),
+                })
+                .collect::<Vec<_>>(),
             &table_config.metadata.schema.primary_key,
         )?;
+
+        let data = data
+            .into_iter()
+            .map(|out_col| out_col.to_column())
+            .collect::<Vec<_>>();
 
         let marks = generate_indexes(
             &data,

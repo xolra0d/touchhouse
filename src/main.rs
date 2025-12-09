@@ -22,6 +22,8 @@ use tokio_util::codec::Decoder as _;
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
+    reject_32bit_systems()?;
+
     env_logger::Builder::from_default_env()
         .filter_level(CONFIG.get_log_level())
         .init();
@@ -109,4 +111,12 @@ async fn handle_connection(socket: &mut TcpStream) -> Result<(), Error> {
     }
     info!("Connection closed.");
     Ok(())
+}
+
+fn reject_32bit_systems() -> Result<(), String> {
+    if size_of::<&char>() != 8 {
+        Err(format!("32bit systems are not supported and optimal for OLAP workload which could require gigabytes of ram and where the number of rows could exceed {}", u32::MAX))
+    } else {
+        Ok(())
+    }
 }

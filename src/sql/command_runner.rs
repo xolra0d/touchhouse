@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::runtime_config::{ComplexityGuard, DATABASE_LOAD};
+use crate::sql::output_table::OutputTable;
 use crate::sql::sql_parser::{LogicalPlan, PhysicalPlan};
-use crate::storage::OutputTable;
 
 /// Main runner struct which executes received command.
 #[derive(Debug)]
@@ -58,8 +58,8 @@ impl CommandRunner {
             } => Self::select(
                 scan_source,
                 columns,
-                filter,
-                sort_by.as_ref(),
+                filter.map(|x| *x),
+                sort_by,
                 limit,
                 offset,
             ),

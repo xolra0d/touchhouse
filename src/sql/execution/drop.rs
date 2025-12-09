@@ -2,7 +2,8 @@ use crate::config::CONFIG;
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
 use crate::sql::CommandRunner;
-use crate::storage::{OutputTable, TableDef};
+use crate::sql::output_table::OutputTable;
+use crate::storage::TableDef;
 
 impl CommandRunner {
     /// Drops a table.
