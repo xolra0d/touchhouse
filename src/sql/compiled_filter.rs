@@ -239,7 +239,10 @@ impl CompiledFilter {
                     .ok_or(Error::ColumnNotFound(ident.value.clone()))?;
 
                 if table_column_defs[col_idx].field_type != ValueType::Bool {
-                    Ok(Self::Const(false))
+                    Err(Error::InvalidSource(format!(
+                        "Column '{}' has type {:?}, but boolean expected in filter expression",
+                        ident.value, table_column_defs[col_idx].field_type
+                    )))
                 } else {
                     Ok(Self::Column(col_idx))
                 }
