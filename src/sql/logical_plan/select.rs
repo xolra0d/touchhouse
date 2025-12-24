@@ -241,9 +241,11 @@ impl LogicalPlan {
                     ));
                 };
 
-                limit = Some(limit_expr
-                    .parse()
-                    .map_err(|_| Error::InvalidLimitValue(limit_expr.clone()))?);
+                limit = Some(
+                    limit_expr
+                        .parse()
+                        .map_err(|_| Error::InvalidLimitValue(limit_expr.clone()))?,
+                );
             }
 
             if let Some(offset_expr) = offset_expr {

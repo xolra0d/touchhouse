@@ -33,6 +33,7 @@ pub fn compress_bytes(bytes: &[u8], compression_type: &CompressionType) -> Resul
             let output = Vec::with_capacity(bytes.len() / 2); // on average compresses 2x
             let mut encoder = lz4::EncoderBuilder::new()
                 .level(u32::from(level))
+                .checksum(lz4::ContentChecksum::NoChecksum)
                 .build(output)
                 .map_err(|_| Error::CouldNotInsertData("Could not compress data.".to_string()))?;
             encoder

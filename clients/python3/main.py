@@ -1,9 +1,11 @@
+import argparse
+import readline as _
 import socket
 import struct
-import argparse
+
 import msgpack
 import prettytable
-import readline as _
+
 
 def encode_message(message: str) -> bytes:
     message_bytes = message.encode("utf-8")
@@ -44,6 +46,7 @@ def decode_and_print_table(message_bytes: bytes):
     elif error := message.get("Err"):
         print(f"Error: {error}")
 
+
 def run(host: str, port: int):
     try:
         print(f"Connecting to {host}:{port}")
@@ -68,10 +71,12 @@ def run(host: str, port: int):
             while bytes_received < response_length:
                 chunk = sock.recv(min(response_length - bytes_received, 4096))
                 if not chunk:
-                    raise ValueError("Connection closed before complete message received")
+                    raise ValueError(
+                        "Connection closed before complete message received"
+                    )
                 chunks.append(chunk)
                 bytes_received += len(chunk)
-            message_bytes = b''.join(chunks)
+            message_bytes = b"".join(chunks)
 
             print()
             decode_and_print_table(message_bytes)

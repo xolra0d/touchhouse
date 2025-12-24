@@ -28,6 +28,12 @@ pub enum EngineName {
     ReplacingMergeTree,
 }
 
+impl Default for EngineName {
+    fn default() -> Self {
+        Self::MergeTree
+    }
+}
+
 impl TryFrom<&str> for EngineName {
     type Error = Error;
     fn try_from(value: &str) -> Result<Self> {

@@ -23,13 +23,14 @@ pub struct MarkInfo {
     pub end: u64,
 }
 
-/// Represents a first row of each granule as well as it's starting position and ending.
+/// Represents a first row of each granule and start-end bytes info for each granule.
 #[derive(Debug, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize, PartialEq)]
 pub struct Mark {
     pub index: Vec<Value>,
-    pub info: Vec<MarkInfo>, // compression
+    pub info: Vec<MarkInfo>,
 }
 
+/// Immutable table part information.
 #[derive(Debug, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize)]
 pub struct TablePartInfo {
     pub name: String,
@@ -170,7 +171,6 @@ impl TablePartInfo {
     }
 }
 
-/// Immutable table part information.
 #[derive(Debug, Clone)]
 pub struct TablePart {
     pub info: TablePartInfo,

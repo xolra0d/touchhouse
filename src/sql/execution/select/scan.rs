@@ -1,10 +1,11 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::error::{Error, Result};
+use crate::sql::execution::select::Strategy;
 use crate::sql::{OutputColumn, Projection, ProjectionValue};
 use crate::storage::value::ArchivedValue;
-use crate::storage::{Column, ColumnDef, Mark, TableDef, TablePartInfo, Value};
+use crate::storage::{Column, ColumnDef, MarkInfo, TableDef, TablePartInfo, Value};
 use rkyv::vec::ArchivedVec;
 
 pub struct ScanLogic;
@@ -17,6 +18,7 @@ impl ScanLogic {
         mut accumulator: Vec<Vec<Value>>,
         mut accumulator_fn: F,
         index_granularity: usize,
+        strategy: &Strategy,
     ) -> Result<Vec<OutputColumn>>
     where
         F: FnMut(Vec<Vec<Value>>, &Vec<Option<(Vec<u8>, &[bool])>>, usize) -> Vec<Vec<Value>>,
@@ -29,6 +31,11 @@ impl ScanLogic {
             .filter(|col| !col.is_virtual)
             .map(|col| &col.column_def)
             .collect();
+
+        // let results: Result<Vec<_>> = row_parts_masks
+        //     .par_iter()
+        //     .map(|(part_info, granules_mask)| {})
+        //     .collect();
 
         for (part_info, granules_mask) in row_parts_masks {
             let mapping =
@@ -46,6 +53,10 @@ impl ScanLogic {
             let mut refs: Vec<Option<(Vec<u8>, &[bool])>> = vec![None; output_columns.len()];
 
             for (granule_idx, granule_mask) in granules_mask {
+                if accepted_row_count.load(Ordering::Relaxed) >= strategy.lines_to_read {
+                    break;
+                }
+
                 let mut row_count = None;
                 for &(out_col_idx, part_col_idx) in &mapping {
                     let granule_bytes = TablePartInfo::get_granule_bytes_decompressed(
@@ -69,12 +80,12 @@ impl ScanLogic {
                         return Err(Error::NoColumnsSpecified);
                     };
                     if part_info.marks[granule_idx] == *last_mark {
-                        Self::get_granule_rows_fallback(table_def, part_info, last_mark)?
+                        Self::get_granule_rows_fallback(table_def, part_info, &last_mark.info)?
                     } else {
                         index_granularity
                     }
                 });
-
+                accepted_row_count.fetch_add(row_count, Ordering::Relaxed);
                 accumulator = accumulator_fn(accumulator, &refs, row_count);
                 refs = vec![None; output_columns.len()];
             }
@@ -143,9 +154,9 @@ impl ScanLogic {
     pub fn get_granule_rows_fallback(
         table_def: &TableDef,
         part_info: &TablePartInfo,
-        mark: &Mark,
+        mark_info: &Vec<MarkInfo>,
     ) -> Result<usize> {
-        let Some(first_mark_info) = mark.info.first() else {
+        let Some(first_mark_info) = mark_info.first() else {
             return Err(Error::NoColumnsSpecified);
         };
         let Some(col_def) = part_info.column_defs.first() else {
