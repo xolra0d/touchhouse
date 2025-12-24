@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::error::{Error, Result};
+use crate::sql::execution::select::accumulate_function::AccumulateFn;
 use crate::sql::execution::select::{GranuleMask, Strategy};
 use crate::sql::{OutputColumn, Projection, ProjectionValue};
 use crate::storage::value::ArchivedValue;
@@ -11,18 +12,15 @@ use rkyv::vec::ArchivedVec;
 pub struct ScanLogic;
 
 impl ScanLogic {
-    pub fn get_archived_values<F>(
+    pub fn get_archived_values(
         table_def: &TableDef,
         row_parts_masks: Vec<(&TablePartInfo, Vec<GranuleMask>)>,
         projections: Vec<Projection>,
         mut accumulator: Vec<Vec<Value>>,
-        mut accumulator_fn: F,
+        acc_struct: impl AccumulateFn,
         index_granularity: usize,
         strategy: &Strategy,
-    ) -> Result<Vec<OutputColumn>>
-    where
-        F: FnMut(Vec<Vec<Value>>, &Vec<Option<(Vec<u8>, &[bool])>>, usize) -> Vec<Vec<Value>>,
-    {
+    ) -> Result<Vec<OutputColumn>> {
         let accepted_row_count = Arc::new(AtomicUsize::new(0));
         let mut output_columns = Self::convert_proj_to_out_cols(projections);
 
@@ -81,7 +79,7 @@ impl ScanLogic {
                     }
                 });
                 accepted_row_count.fetch_add(row_count, Ordering::Relaxed);
-                accumulator = accumulator_fn(accumulator, &refs, row_count);
+                accumulator = acc_struct.accumulate(accumulator, &refs, row_count)?;
                 refs = vec![None; output_columns.len()];
             }
         }

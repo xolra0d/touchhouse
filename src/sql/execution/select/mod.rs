@@ -3,7 +3,6 @@ mod filter;
 mod scan;
 mod strategy;
 
-pub use accumulate_function::AccumulateFunction;
 pub use filter::FilterLogic;
 pub use scan::ScanLogic;
 pub use strategy::Strategy;
@@ -11,6 +10,7 @@ pub use strategy::Strategy;
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
 use crate::sql::CommandRunner;
+use crate::sql::execution::select::accumulate_function::{AccumulateFn, SumFn};
 use crate::sql::output_table::OutputTable;
 use crate::sql::sql_parser::{Projection, ScanSource};
 
@@ -66,7 +66,7 @@ impl CommandRunner {
             row_parts_mask,
             projections,
             vec![Vec::new(); proj_len],
-            AccumulateFunction::filter_fn,
+            SumFn::new(),
             table_config.metadata.settings.index_granularity as usize,
             &optimal_strategy,
         )?;
