@@ -17,6 +17,11 @@ use crate::sql::sql_parser::{Projection, ScanSource};
 use crate::engines::EngineName;
 use sqlparser::ast::Expr;
 
+pub struct GranuleMask {
+    pub granule_id: usize,
+    pub mask: Vec<bool>,
+}
+
 impl CommandRunner {
     pub fn select(
         table_def: ScanSource,

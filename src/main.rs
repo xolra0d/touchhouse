@@ -116,7 +116,7 @@ async fn handle_connection(socket: &mut TcpStream) -> Result<(), Error> {
 fn reject_32bit_systems() -> Result<(), String> {
     if size_of::<&char>() <= 4 {
         Err(format!(
-            "32bit systems are not supported, because they are are not optimal for OLAP workload which could require gigabytes of ram and where the number of rows could exceed {}",
+            "32bit systems are not supported, because they are not optimal for OLAP workload which could require gigabytes of ram and where the number of rows could exceed {}",
             u32::MAX
         ))
     } else {

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::error::{Error, Result};
-use crate::sql::execution::select::Strategy;
+use crate::sql::execution::select::{GranuleMask, Strategy};
 use crate::sql::{OutputColumn, Projection, ProjectionValue};
 use crate::storage::value::ArchivedValue;
 use crate::storage::{Column, ColumnDef, MarkInfo, TableDef, TablePartInfo, Value};
@@ -13,7 +13,7 @@ pub struct ScanLogic;
 impl ScanLogic {
     pub fn get_archived_values<F>(
         table_def: &TableDef,
-        row_parts_masks: Vec<(&TablePartInfo, Vec<(usize, Vec<bool>)>)>,
+        row_parts_masks: Vec<(&TablePartInfo, Vec<GranuleMask>)>,
         projections: Vec<Projection>,
         mut accumulator: Vec<Vec<Value>>,
         mut accumulator_fn: F,
@@ -32,11 +32,6 @@ impl ScanLogic {
             .map(|col| &col.column_def)
             .collect();
 
-        // let results: Result<Vec<_>> = row_parts_masks
-        //     .par_iter()
-        //     .map(|(part_info, granules_mask)| {})
-        //     .collect();
-
         for (part_info, granules_mask) in row_parts_masks {
             let mapping =
                 Self::create_out_cols_to_disk_cols_mapping(&output_columns, &part_info.column_defs);
@@ -45,14 +40,14 @@ impl ScanLogic {
 
             // todo: open only required..
             for col_def in &part_info.column_defs {
-                let mmap = Column::open_as_mmap(&part_info.get_column_path(&table_def, col_def))?;
+                let mmap = Column::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
                 Column::validate_mmap(&mmap, &col_def.name)?;
                 mmaps.push(mmap);
             }
 
             let mut refs: Vec<Option<(Vec<u8>, &[bool])>> = vec![None; output_columns.len()];
 
-            for (granule_idx, granule_mask) in granules_mask {
+            for granule_mask in granules_mask {
                 if accepted_row_count.load(Ordering::Relaxed) >= strategy.lines_to_read {
                     break;
                 }
@@ -61,7 +56,7 @@ impl ScanLogic {
                 for &(out_col_idx, part_col_idx) in &mapping {
                     let granule_bytes = TablePartInfo::get_granule_bytes_decompressed(
                         &mmaps[part_col_idx],
-                        &part_info.marks[granule_idx].info[part_col_idx],
+                        &part_info.marks[granule_mask.granule_id].info[part_col_idx],
                         &output_columns[out_col_idx]
                             .column_def
                             .constraints
@@ -72,14 +67,14 @@ impl ScanLogic {
                             unsafe { rkyv::access_unchecked(&granule_bytes) };
                         row_count = Some(archived.len());
                     }
-                    refs[out_col_idx] = Some((granule_bytes, &granule_mask));
+                    refs[out_col_idx] = Some((granule_bytes, &granule_mask.mask));
                 }
 
                 let row_count = row_count.unwrap_or({
                     let Some(last_mark) = part_info.marks.last() else {
                         return Err(Error::NoColumnsSpecified);
                     };
-                    if part_info.marks[granule_idx] == *last_mark {
+                    if part_info.marks[granule_mask.granule_id] == *last_mark {
                         Self::get_granule_rows_fallback(table_def, part_info, &last_mark.info)?
                     } else {
                         index_granularity
@@ -154,7 +149,7 @@ impl ScanLogic {
     pub fn get_granule_rows_fallback(
         table_def: &TableDef,
         part_info: &TablePartInfo,
-        mark_info: &Vec<MarkInfo>,
+        mark_info: &[MarkInfo],
     ) -> Result<usize> {
         let Some(first_mark_info) = mark_info.first() else {
             return Err(Error::NoColumnsSpecified);
@@ -162,12 +157,12 @@ impl ScanLogic {
         let Some(col_def) = part_info.column_defs.first() else {
             return Err(Error::NoColumnsSpecified);
         };
-        let mmap = Column::open_as_mmap(&part_info.get_column_path(&table_def, col_def))?;
+        let mmap = Column::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
         Column::validate_mmap(&mmap, &col_def.name)?;
 
         let granule_bytes = TablePartInfo::get_granule_bytes_decompressed(
             &mmap,
-            &first_mark_info,
+            first_mark_info,
             &col_def.constraints.compression_type,
         )?;
         let archived: &ArchivedVec<ArchivedValue> =

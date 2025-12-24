@@ -11,7 +11,7 @@ pub struct OutputColumn {
 }
 
 impl OutputColumn {
-    pub fn to_column(self) -> Column {
+    pub fn into_column(self) -> Column {
         Column {
             column_def: self.column_def,
             data: self.data,

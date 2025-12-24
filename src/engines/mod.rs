@@ -22,16 +22,13 @@ pub trait Engine {
 }
 
 /// Used for storing engine name in metadata.
-#[derive(Debug, Eq, Hash, PartialEq, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize)]
+#[derive(
+    Default, Debug, Eq, Hash, PartialEq, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize,
+)]
 pub enum EngineName {
+    #[default]
     MergeTree,
     ReplacingMergeTree,
-}
-
-impl Default for EngineName {
-    fn default() -> Self {
-        Self::MergeTree
-    }
 }
 
 impl TryFrom<&str> for EngineName {

@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::runtime_config::TableConfig;
 use crate::sql::compiled_filter::{BinOp, CompiledFilter};
-use crate::sql::execution::select::{ScanLogic, Strategy};
+use crate::sql::execution::select::{GranuleMask, ScanLogic, Strategy};
 use crate::storage::value::ArchivedValue;
 use crate::storage::{Column, ColumnDef, Mark, MarkInfo, TableDef, TablePartInfo, Value};
 
@@ -13,8 +13,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::vec;
 
-type GranuleMarkValues = Vec<MarkInfo>;
-
 pub struct FilterLogic;
 
 impl FilterLogic {
@@ -23,7 +21,7 @@ impl FilterLogic {
         filter_expr: Option<Expr>,
         table_def: &TableDef,
         strategy: &Strategy,
-    ) -> Result<Vec<(&'a TablePartInfo, Vec<(usize, Vec<bool>)>)>> {
+    ) -> Result<Vec<(&'a TablePartInfo, Vec<GranuleMask>)>> {
         let Some(filter) = filter_expr else {
             return Self::no_fiter_fallback(table_def, table_config);
         };
@@ -52,7 +50,7 @@ impl FilterLogic {
         // because sorting with less columns in part is easier
         part_infos.sort_unstable_by(|a, b| b.row_count.cmp(&a.row_count));
 
-        let parts_granule_marks: Vec<(&TablePartInfo, Vec<&GranuleMarkValues>)> = part_infos
+        let parts_granule_marks: Vec<(&TablePartInfo, Vec<&Vec<MarkInfo>>)> = part_infos
             .par_iter()
             .map(|&part_info| {
                 (
@@ -68,8 +66,7 @@ impl FilterLogic {
             })
             .collect();
 
-        let mut total_parts_mask: Vec<(&TablePartInfo, Vec<(usize, Vec<bool>)>)> =
-            Vec::with_capacity(part_infos.len());
+        let mut total_parts_mask = Vec::with_capacity(part_infos.len());
         let accepted_rows_count = Arc::new(AtomicUsize::new(0));
 
         for (part_info, marks_to_scan) in &parts_granule_marks {
@@ -81,7 +78,7 @@ impl FilterLogic {
                 if let Some(part_col_idx) = part_info.column_defs.iter().position(|c| c == *col_def)
                 {
                     let mmap =
-                        Column::open_as_mmap(&part_info.get_column_path(&table_def, col_def))?;
+                        Column::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
                     Column::validate_mmap(&mmap, &col_def.name)?;
                     mmaps.push(Some(mmap));
                     filter_to_part_col_idx[col_idx] = Some(part_col_idx);
@@ -93,15 +90,14 @@ impl FilterLogic {
             let filter_to_part_col_idx = Arc::new(filter_to_part_col_idx);
 
             // for each part we store idx of granule and mask for each row
-            let part_mask: Result<Vec<Vec<(usize, Vec<bool>)>>> = marks_to_scan
+            let part_mask: Result<Vec<Vec<GranuleMask>>> = marks_to_scan
                 .iter()
                 .enumerate()
                 .collect::<Vec<_>>()
                 .par_chunks(5) // todo: move constant to cfg
                 .map(|chunk_granule_marks| {
                     let mut data_bytes = vec![None; columns_to_filter.len()]; // todo: instead of new, have an average number of bytes for each column type decompressed
-                    let mut mask: Vec<(usize, Vec<bool>)> =
-                        Vec::with_capacity(chunk_granule_marks.len());
+                    let mut mask: Vec<GranuleMask> = Vec::with_capacity(chunk_granule_marks.len());
 
                     for &(granule_idx, &mark_infos) in chunk_granule_marks {
                         if accepted_rows_count.load(Ordering::Relaxed) >= strategy.lines_to_read {
@@ -115,7 +111,7 @@ impl FilterLogic {
                                 let part_col_idx = filter_to_part_col_idx[file_idx]
                                     .expect("mmap exists but mapping doesn't");
                                 let granule_bytes = TablePartInfo::get_granule_bytes_decompressed(
-                                    &mmap,
+                                    mmap,
                                     &mark_infos[part_col_idx],
                                     &columns_to_filter[file_idx].constraints.compression_type,
                                 )?;
@@ -129,9 +125,7 @@ impl FilterLogic {
                         }
 
                         let row_count = row_count.unwrap_or(ScanLogic::get_granule_rows_fallback(
-                            table_def,
-                            part_info,
-                            &mark_infos,
+                            table_def, part_info, mark_infos,
                         )?);
 
                         let mask_part = FilterLogic::generate_mask(
@@ -141,7 +135,10 @@ impl FilterLogic {
                             row_count,
                         );
 
-                        mask.push((granule_idx, mask_part));
+                        mask.push(GranuleMask {
+                            granule_id: granule_idx,
+                            mask: mask_part,
+                        });
 
                         accepted_rows_count.fetch_add(row_count, Ordering::Relaxed);
                     }
@@ -150,7 +147,7 @@ impl FilterLogic {
                 })
                 .collect();
             let part_mask: Vec<_> = part_mask?.into_iter().flatten().collect();
-            total_parts_mask.push((part_info, part_mask));
+            total_parts_mask.push((*part_info, part_mask));
         }
 
         Ok(total_parts_mask)
@@ -159,12 +156,11 @@ impl FilterLogic {
     fn no_fiter_fallback<'a>(
         table_def: &TableDef,
         table_config: &'a TableConfig,
-    ) -> Result<Vec<(&'a TablePartInfo, Vec<(usize, Vec<bool>)>)>> {
-        let mut total_parts_mask: Vec<(&TablePartInfo, Vec<(usize, Vec<bool>)>)> =
-            Vec::with_capacity(table_config.infos.len());
+    ) -> Result<Vec<(&'a TablePartInfo, Vec<GranuleMask>)>> {
+        let mut total_parts_mask = Vec::with_capacity(table_config.infos.len());
 
         for (part_idx, part_info) in table_config.infos.iter().enumerate() {
-            total_parts_mask.push((&part_info, Vec::with_capacity(part_info.marks.len())));
+            total_parts_mask.push((part_info, Vec::with_capacity(part_info.marks.len())));
             let last_mark = &part_info.marks[part_info.marks.len() - 1];
 
             let col_def = part_info
@@ -175,7 +171,7 @@ impl FilterLogic {
             for (mark_idx, mark) in part_info.marks.iter().enumerate() {
                 if mark == last_mark {
                     let mmap =
-                        Column::open_as_mmap(&part_info.get_column_path(&table_def, col_def))?;
+                        Column::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
 
                     Column::validate_mmap(&mmap, &col_def.name)?;
 
@@ -189,16 +185,17 @@ impl FilterLogic {
                     let archived: &ArchivedVec<ArchivedValue> =
                         unsafe { rkyv::access_unchecked(&granule_bytes) };
 
-                    total_parts_mask[part_idx]
-                        .1
-                        .push((mark_idx, vec![true; archived.len()]));
+                    total_parts_mask[part_idx].1.push(GranuleMask {
+                        granule_id: mark_idx,
+                        mask: vec![true; archived.len()],
+                    });
 
                     break;
                 }
-                total_parts_mask[part_idx].1.push((
-                    mark_idx,
-                    vec![true; table_config.metadata.settings.index_granularity as usize],
-                ));
+                total_parts_mask[part_idx].1.push(GranuleMask {
+                    granule_id: mark_idx,
+                    mask: vec![true; table_config.metadata.settings.index_granularity as usize],
+                });
             }
         }
 
@@ -222,14 +219,9 @@ impl FilterLogic {
         columns_to_filter: &[&ColumnDef],
         pk_col_defs: &[ColumnDef],
     ) -> bool {
-        if columns_to_filter
+        columns_to_filter
             .iter()
             .all(|col_def| pk_col_defs.contains(col_def))
-        {
-            true
-        } else {
-            false
-        }
     }
 
     pub fn filter_granules<'a>(

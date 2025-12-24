@@ -12,12 +12,10 @@ impl Strategy {
     ) -> Self {
         let lines_to_read = if have_order_by {
             in_table_lines
+        } else if let Some(limit) = limit {
+            in_table_lines.min(limit) + offset
         } else {
-            if let Some(limit) = limit {
-                in_table_lines.min(limit) + offset
-            } else {
-                in_table_lines
-            }
+            in_table_lines
         };
 
         Self { lines_to_read }

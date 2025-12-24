@@ -42,7 +42,7 @@ impl BackgroundMerge {
                 &merge_data.table_def,
                 merged
                     .into_iter()
-                    .map(|col| col.to_output_column())
+                    .map(|col| col.into_output_column())
                     .collect(),
                 Some(merge_data.part_1.name.clone()), // use latest name of two for proper future merging
             ) {

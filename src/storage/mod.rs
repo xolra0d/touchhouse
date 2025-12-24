@@ -55,7 +55,7 @@ pub struct Column {
 }
 
 impl Column {
-    pub fn to_output_column(self) -> OutputColumn {
+    pub fn into_output_column(self) -> OutputColumn {
         OutputColumn {
             alias: None,
             column_def: self.column_def,

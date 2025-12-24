@@ -223,7 +223,7 @@ impl TablePart {
 
         let data = data
             .into_iter()
-            .map(|out_col| out_col.to_column())
+            .map(|out_col| out_col.into_column())
             .collect::<Vec<_>>();
 
         let marks = generate_indexes(

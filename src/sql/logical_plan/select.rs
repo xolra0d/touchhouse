@@ -172,7 +172,7 @@ impl LogicalPlan {
                 read_columns.clone_from(&available_columns);
             } else {
                 for proj in &available_columns {
-                    if !read_columns.contains(&proj) {
+                    if !read_columns.contains(proj) {
                         read_columns.push(proj.clone());
                     }
                 }
