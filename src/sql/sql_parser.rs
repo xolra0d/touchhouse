@@ -274,7 +274,7 @@ impl From<LogicalPlan> for PhysicalPlan {
 }
 
 impl PhysicalPlan {
-    pub fn get_complexity(&self) -> u32 {
+    pub fn get_complexity(&self) -> usize {
         match self {
             PhysicalPlan::Skip => 0,
             PhysicalPlan::CreateDatabase { .. }

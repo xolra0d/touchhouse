@@ -3,7 +3,6 @@
 //   * Using `Encoder` trait we encode Received Result<OutputTable, T: Display>
 //     Typically, generic T is `Error`, which then converted using `ToString` trait
 
-use crate::sql::OutputTable;
 use derive_more::Display;
 use rmp_serde::encode::Error as RMPError;
 use serde::Serialize;
@@ -11,12 +10,14 @@ use std::fmt;
 use tokio_util::bytes::{Buf, BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 
+use crate::sql::OutputTable;
+
 type HeaderType = u64;
 const HEADER_SIZE: usize = size_of::<HeaderType>();
 
 // Created for derive Display and IO error handling (required by `Encoder` and `Decoder` traits).
 #[derive(Debug, Serialize, Display)]
-pub enum ProtocolError {
+pub enum RMPProtocolError {
     #[display("SQL parsing error. Unknown length")]
     UnknownLength,
     #[display("SQL parsing error. Invalid data model: {_0}")]
@@ -33,13 +34,13 @@ pub enum ProtocolError {
 }
 
 // Required by `Encoder` and `Decoder` traits.
-impl From<std::io::Error> for ProtocolError {
+impl From<std::io::Error> for RMPProtocolError {
     fn from(error: std::io::Error) -> Self {
         Self::IOError(error.to_string())
     }
 }
 
-impl From<RMPError> for ProtocolError {
+impl From<RMPError> for RMPProtocolError {
     fn from(error: RMPError) -> Self {
         match error {
             RMPError::InvalidValueWrite(s) => Self::InvalidDataModel(s.to_string()),
@@ -60,7 +61,7 @@ pub struct Parser;
 
 impl Decoder for Parser {
     type Item = String;
-    type Error = ProtocolError;
+    type Error = RMPProtocolError;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if buf.len() < HEADER_SIZE {
@@ -73,8 +74,12 @@ impl Decoder for Parser {
             header_bytes[i] = buf[i];
         }
 
-        let body_size = usize::try_from(HeaderType::from_le_bytes(header_bytes))
-            .map_err(|_| ProtocolError::Conversion("Header type too large".to_string()))?;
+        let body_size =
+            usize::try_from(HeaderType::from_le_bytes(header_bytes)).map_err(|error| {
+                RMPProtocolError::Conversion(format!(
+                    "Invalid header length sent ({header_bytes:?}): {error}"
+                ))
+            })?;
         let total_message_size = HEADER_SIZE + body_size;
 
         if buf.len() < total_message_size {
@@ -91,11 +96,12 @@ impl Decoder for Parser {
     }
 }
 
+// `T` is either `crate::error::Error`, or `RMPProtocolError`
 impl<T> Encoder<Result<OutputTable, T>> for Parser
 where
     T: fmt::Display,
 {
-    type Error = ProtocolError;
+    type Error = RMPProtocolError;
 
     fn encode(
         &mut self,

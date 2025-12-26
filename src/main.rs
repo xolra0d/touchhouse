@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use touchhouse::{
-    accept_conn, build_logger, init_conn_semaphore, init_listener, load_all_parts_on_startup,
+    accept_conn, build_logger, init_conn_semaphore, init_listener, load_existing_parts,
     log_startup_info, reject_32bit_systems, spawn_background_merges,
 };
 
@@ -8,7 +8,7 @@ use touchhouse::{
 async fn main() -> Result<(), String> {
     reject_32bit_systems()?;
     build_logger();
-    load_all_parts_on_startup()?;
+    load_existing_parts()?;
     spawn_background_merges();
     let conn_semaphore = init_conn_semaphore();
     let listener = init_listener().await?;

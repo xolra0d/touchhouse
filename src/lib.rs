@@ -134,8 +134,11 @@ async fn handle_connection(socket: &mut TcpStream) -> Result<(), Error> {
 /// Scans all databases and tables, loads part indexes, and populates `TABLE_DATA`.
 /// Cleans up any leftover raw directories from previous runs.
 ///
+/// # Panics:
+/// * Table definition is removed from `TABLE_DATA` while loading parts.
+///
 /// Returns: Ok or `String` on critical failure
-pub fn load_all_parts_on_startup() -> Result<(), String> {
+pub fn load_existing_parts() -> Result<(), String> {
     let db_dir = CONFIG.get_db_dir();
     info!(
         "Loading parts from database directory: {}",
@@ -242,8 +245,8 @@ pub fn load_all_parts_on_startup() -> Result<(), String> {
                     Ok(info) => {
                         let Some(mut result) = TABLE_DATA.get_mut(&table_def) else {
                             panic!(
-                                "Table definiton is removed from TABLE_DATA while loading all parts.."
-                            ) // todo: why would it return an Option??
+                                "Table definition is removed from TABLE_DATA while loading all parts.."
+                            )
                         };
                         result.infos.push(info);
                         info!("Loaded part ({part_name}) for table ({table_def})");

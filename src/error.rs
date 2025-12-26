@@ -84,5 +84,6 @@ pub enum Error {
 
     // mod main
     SendResponse, // does not need display
+    #[display("Internal error happened: {_0}")]
     Internal(String),
 }

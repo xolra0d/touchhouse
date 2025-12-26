@@ -40,7 +40,7 @@ pub struct Config {
     /// Max concurrent connections.
     max_concurrent_connections: usize,
     /// Signifies when database can do background merges of parts, depending on database load
-    background_merge_available_under: u32,
+    background_merge_available_under: usize,
 }
 
 impl Config {
@@ -72,7 +72,7 @@ impl Config {
     ///
     /// The threshold value used to determine when background merges are allowed
     /// meaning, that database is under low load
-    pub const fn get_background_merge_available_under(&self) -> u32 {
+    pub const fn get_background_merge_available_under(&self) -> usize {
         self.background_merge_available_under
     }
     /// Ensures that storage directory exists and is indeed directory. Creates one, if not exists
@@ -95,7 +95,7 @@ impl Config {
         if !std::fs::exists(dir)
             .unwrap_or_else(|error| panic!("Can't check existence of database directory: {error}"))
         {
-            panic!("Could not create storage directory ({dir:?})");
+            panic!("Could not create storage directory ({})", dir.display());
         }
 
         assert!(
