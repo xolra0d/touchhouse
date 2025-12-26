@@ -6,7 +6,8 @@ use crate::sql::execution::select::accumulate_function::AccumulateFn;
 use crate::sql::execution::select::{GranuleMask, Strategy};
 use crate::sql::{OutputColumn, Projection, ProjectionValue};
 use crate::storage::value::ArchivedValue;
-use crate::storage::{Column, ColumnDef, MarkInfo, TableDef, TablePartInfo, Value};
+use crate::storage::{Column, ColumnDef, Constraints, MarkInfo, TableDef, TablePartInfo, Value};
+use rayon::prelude::*;
 use rkyv::vec::ArchivedVec;
 
 pub struct ScanLogic;
@@ -17,76 +18,88 @@ impl ScanLogic {
         row_parts_masks: Vec<(&TablePartInfo, Vec<GranuleMask>)>,
         projections: Vec<Projection>,
         mut accumulator: Vec<Vec<Value>>,
-        acc_struct: impl AccumulateFn,
+        acc_struct: &(impl AccumulateFn + std::marker::Sync),
         index_granularity: usize,
         strategy: &Strategy,
     ) -> Result<Vec<OutputColumn>> {
         let accepted_row_count = Arc::new(AtomicUsize::new(0));
         let mut output_columns = Self::convert_proj_to_out_cols(projections);
 
-        let might_disk_col_defs: Vec<_> = output_columns
-            .iter()
-            .filter(|col| !col.is_virtual)
-            .map(|col| &col.column_def)
-            .collect();
-
         for (part_info, granules_mask) in row_parts_masks {
             let mapping =
                 Self::create_out_cols_to_disk_cols_mapping(&output_columns, &part_info.column_defs);
 
-            let mut mmaps = Vec::with_capacity(might_disk_col_defs.len());
-
             // todo: open only required..
-            for col_def in &part_info.column_defs {
-                let mmap = Column::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
-                Column::validate_mmap(&mmap, &col_def.name)?;
-                mmaps.push(mmap);
-            }
+            let mmaps: Result<Vec<_>> = part_info
+                .column_defs
+                .par_iter()
+                .map(|col_def| {
+                    let mmap =
+                        Column::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
+                    Column::validate_mmap(&mmap, &col_def.name)?;
+                    Ok(mmap)
+                })
+                .collect();
 
-            let mut refs: Vec<Option<(Vec<u8>, &[bool])>> = vec![None; output_columns.len()];
+            let mmaps = mmaps?;
 
-            for granule_mask in granules_mask {
-                if accepted_row_count.load(Ordering::Relaxed) >= strategy.lines_to_read {
-                    break;
-                }
-
-                let mut row_count = None;
-                for &(out_col_idx, part_col_idx) in &mapping {
-                    let granule_bytes = TablePartInfo::get_granule_bytes_decompressed(
-                        &mmaps[part_col_idx],
-                        &part_info.marks[granule_mask.granule_id].info[part_col_idx],
-                        &output_columns[out_col_idx]
-                            .column_def
-                            .constraints
-                            .compression_type,
-                    )?;
-                    if row_count.is_none() {
-                        let archived: &ArchivedVec<ArchivedValue> =
-                            unsafe { rkyv::access_unchecked(&granule_bytes) };
-                        row_count = Some(archived.len());
+            accumulator = granules_mask
+                .into_par_iter()
+                .filter_map(|granule_mask| {
+                    if accepted_row_count.load(Ordering::Relaxed) >= strategy.lines_to_read {
+                        return None;
                     }
-                    refs[out_col_idx] = Some((granule_bytes, &granule_mask.mask));
-                }
+                    let mut refs: Vec<Option<(Vec<u8>, &[bool])>> =
+                        vec![None; output_columns.len()];
 
-                let row_count = row_count.unwrap_or({
-                    let Some(last_mark) = part_info.marks.last() else {
-                        return Err(Error::NoColumnsSpecified);
-                    };
-                    if part_info.marks[granule_mask.granule_id] == *last_mark {
-                        Self::get_granule_rows_fallback(table_def, part_info, &last_mark.info)?
-                    } else {
-                        index_granularity
+                    let mut row_count = None;
+                    for &(out_col_idx, part_col_idx) in &mapping {
+                        let granule_bytes = match TablePartInfo::get_granule_bytes_decompressed(
+                            &mmaps[part_col_idx],
+                            &part_info.marks[granule_mask.granule_id].info[part_col_idx],
+                            &output_columns[out_col_idx]
+                                .column_def
+                                .constraints
+                                .compression_type,
+                        ) {
+                            Ok(bytes) => bytes,
+                            Err(err) => return Some(Err(err)),
+                        };
+                        if row_count.is_none() {
+                            let archived: &ArchivedVec<ArchivedValue> =
+                                unsafe { rkyv::access_unchecked(&granule_bytes) };
+                            row_count = Some(archived.len());
+                        }
+                        refs[out_col_idx] = Some((granule_bytes, &granule_mask.mask));
                     }
-                });
-                accepted_row_count.fetch_add(row_count, Ordering::Relaxed);
-                accumulator = acc_struct.accumulate(accumulator, &refs, row_count)?;
-                refs = vec![None; output_columns.len()];
-            }
+
+                    let row_count = row_count.unwrap_or({
+                        let Some(last_mark) = part_info.marks.last() else {
+                            return Some(Err(Error::NoColumnsSpecified));
+                        };
+                        if part_info.marks[granule_mask.granule_id] == *last_mark {
+                            match Self::get_granule_rows_fallback(
+                                table_def,
+                                part_info,
+                                &last_mark.info,
+                            ) {
+                                Ok(rows) => rows,
+                                Err(err) => return Some(Err(err)),
+                            }
+                        } else {
+                            index_granularity
+                        }
+                    });
+                    accepted_row_count.fetch_add(row_count, Ordering::Relaxed);
+
+                    Some(acc_struct.accumulate_raw(accumulator.clone(), &refs, row_count))
+                })
+                .try_reduce_with(|a, b| acc_struct.accumulate_values(a, b))
+                .ok_or(Error::EmptySource)??;
         }
-
         // apply accumulated values
         for (col_idx, acc_col_data) in accumulator.into_iter().enumerate() {
-            output_columns[col_idx].data.extend(acc_col_data);
+            output_columns[col_idx].data = acc_col_data;
         }
 
         Ok(output_columns)
@@ -126,7 +139,7 @@ impl ScanLogic {
                         column_def: ColumnDef {
                             name: format!("{value:?}"),
                             field_type: value.get_type(),
-                            constraints: Default::default(),
+                            constraints: Constraints::default(),
                         },
                         data: Vec::new(),
                         is_virtual: true,

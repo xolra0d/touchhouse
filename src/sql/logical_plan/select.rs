@@ -159,7 +159,7 @@ impl LogicalPlan {
 
                     read_columns.push(projection);
                 }
-                _ => {
+                SelectItem::QualifiedWildcard(..) => {
                     return Err(Error::UnsupportedCommand(
                         "Only simple column projections and wildcards are supported".to_string(),
                     ));

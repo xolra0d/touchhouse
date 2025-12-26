@@ -14,7 +14,7 @@ use crate::sql::execution::select::accumulate_function::{AccumulateFn, SumFn};
 use crate::sql::output_table::OutputTable;
 use crate::sql::sql_parser::{Projection, ScanSource};
 
-use crate::engines::EngineName;
+use crate::engines::{EngineConfig, EngineName};
 use sqlparser::ast::Expr;
 
 pub struct GranuleMask {
@@ -66,7 +66,7 @@ impl CommandRunner {
             row_parts_mask,
             projections,
             vec![Vec::new(); proj_len],
-            SumFn::new(),
+            &SumFn::new(),
             table_config.metadata.settings.index_granularity as usize,
             &optimal_strategy,
         )?;
@@ -75,12 +75,12 @@ impl CommandRunner {
             for order_by in order_by_vec {
                 // todo: if final is specified, use table engine
                 output_columns = EngineName::default()
-                    .get_engine(Default::default())
+                    .get_engine(EngineConfig::default())
                     .order_columns(
                         output_columns,
                         &order_by,
                         &table_config.metadata.schema.primary_key,
-                    )?
+                    )?;
             }
         }
 

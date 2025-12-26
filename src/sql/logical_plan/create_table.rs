@@ -173,20 +173,18 @@ impl LogicalPlan {
         for param in order_by_params {
             let Expr::Identifier(param_ident) = param else {
                 return Err(Error::InvalidOrderBy(format!(
-                    "Could not parse order by param: {}",
-                    param
+                    "Could not parse order by param: {param}"
                 )));
             };
             let column_name = &param_ident.value;
 
             let column_def = columns.iter().find(|col| col.name == *column_name).ok_or(
-                Error::InvalidOrderBy(format!("Could not find column: {}", column_name)),
+                Error::InvalidOrderBy(format!("Could not find column: {column_name}")),
             )?;
 
             if !order_by_names.insert(column_name) {
                 return Err(Error::InvalidOrderBy(format!(
-                    "Duplicate column: {}",
-                    column_name
+                    "Duplicate column: {column_name}"
                 )));
             }
 

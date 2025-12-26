@@ -7,11 +7,16 @@ use rkyv::vec::ArchivedVec;
 
 pub trait AccumulateFn {
     fn new() -> Self;
-    fn accumulate(
+    fn accumulate_raw(
         &self,
         acc: Vec<Vec<Value>>,
         values: &[Option<(Vec<u8>, &[bool])>],
         row_count: usize,
+    ) -> Result<Vec<Vec<Value>>>;
+    fn accumulate_values(
+        &self,
+        acc: Vec<Vec<Value>>,
+        values: Vec<Vec<Value>>,
     ) -> Result<Vec<Vec<Value>>>;
 }
 
@@ -22,7 +27,7 @@ impl AccumulateFn for SumFn {
         SumFn
     }
 
-    fn accumulate(
+    fn accumulate_raw(
         &self,
         mut acc: Vec<Vec<Value>>,
         values: &[Option<(Vec<u8>, &[bool])>],
@@ -44,8 +49,19 @@ impl AccumulateFn for SumFn {
                     }
                 }
             } else {
-                acc[col_idx].extend(vec![Value::Null; row_count])
+                acc[col_idx].extend(vec![Value::Null; row_count]);
             }
+        }
+        Ok(acc)
+    }
+
+    fn accumulate_values(
+        &self,
+        mut acc: Vec<Vec<Value>>,
+        values: Vec<Vec<Value>>,
+    ) -> Result<Vec<Vec<Value>>> {
+        for (col_idx, col_values) in values.into_iter().enumerate() {
+            acc[col_idx].extend(col_values);
         }
         Ok(acc)
     }

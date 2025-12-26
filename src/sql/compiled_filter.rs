@@ -35,11 +35,6 @@ impl CompiledFilter {
     /// Recursively traverses the filter tree and adds unique column indices to the output vector.
     pub fn get_column_indexes(&self, col_def_idxs: &mut Vec<usize>) {
         match self {
-            CompiledFilter::Compare { col_idx, .. } => {
-                if !col_def_idxs.contains(col_idx) {
-                    col_def_idxs.push(*col_idx);
-                }
-            }
             CompiledFilter::CompareColumns {
                 left_idx,
                 right_idx,
@@ -52,18 +47,14 @@ impl CompiledFilter {
                     col_def_idxs.push(*right_idx);
                 }
             }
-            CompiledFilter::And(left, right) => {
-                left.get_column_indexes(col_def_idxs);
-                right.get_column_indexes(col_def_idxs);
-            }
-            CompiledFilter::Or(left, right) => {
+            CompiledFilter::And(left, right) | CompiledFilter::Or(left, right) => {
                 left.get_column_indexes(col_def_idxs);
                 right.get_column_indexes(col_def_idxs);
             }
             CompiledFilter::Not(filter) => {
                 filter.get_column_indexes(col_def_idxs);
             }
-            CompiledFilter::Column(col_idx) => {
+            CompiledFilter::Compare { col_idx, .. } | CompiledFilter::Column(col_idx) => {
                 if !col_def_idxs.contains(col_idx) {
                     col_def_idxs.push(*col_idx);
                 }
@@ -238,13 +229,13 @@ impl CompiledFilter {
                     .position(|col_def| *col_def.name == ident.value)
                     .ok_or(Error::ColumnNotFound(ident.value.clone()))?;
 
-                if table_column_defs[col_idx].field_type != ValueType::Bool {
+                if table_column_defs[col_idx].field_type == ValueType::Bool {
+                    Ok(Self::Column(col_idx))
+                } else {
                     Err(Error::InvalidSource(format!(
                         "Column '{}' has type {:?}, but boolean expected in filter expression",
                         ident.value, table_column_defs[col_idx].field_type
                     )))
-                } else {
-                    Ok(Self::Column(col_idx))
                 }
             }
             expr => Err(Error::UnsupportedFilter(format!(

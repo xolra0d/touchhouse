@@ -89,7 +89,6 @@ impl FilterLogic {
             let mmaps = Arc::new(mmaps);
             let filter_to_part_col_idx = Arc::new(filter_to_part_col_idx);
 
-            // for each part we store idx of granule and mask for each row
             let part_mask: Result<Vec<Vec<GranuleMask>>> = marks_to_scan
                 .iter()
                 .enumerate()
@@ -166,7 +165,7 @@ impl FilterLogic {
             let col_def = part_info
                 .column_defs
                 .first()
-                .ok_or(Error::PartDoesNotHaveColumns(part_info.name.to_string()))?;
+                .ok_or(Error::PartDoesNotHaveColumns(part_info.name.clone()))?;
 
             for (mark_idx, mark) in part_info.marks.iter().enumerate() {
                 if mark == last_mark {
@@ -179,7 +178,7 @@ impl FilterLogic {
                         &mmap,
                         mark.info
                             .first()
-                            .ok_or(Error::PartDoesNotHaveColumns(part_info.name.to_string()))?,
+                            .ok_or(Error::PartDoesNotHaveColumns(part_info.name.clone()))?,
                         &col_def.constraints.compression_type,
                     )?;
                     let archived: &ArchivedVec<ArchivedValue> =

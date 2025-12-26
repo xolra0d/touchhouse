@@ -11,4 +11,3 @@ INSERT INTO default.user_versions (id, version, name, updated_at) VALUES (1, 'v1
 INSERT INTO default.user_versions (id, version, name, updated_at) VALUES (1, 'v2', 'Alice Updated', 2000), (2, 'v2', 'Bob Updated', 2000)
 INSERT INTO default.user_versions (id, version, name, updated_at) VALUES (1, 'v3', 'Alice Final', 3000)
 SELECT * FROM default.user_versions
-
