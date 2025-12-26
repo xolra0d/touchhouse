@@ -5,7 +5,7 @@ INSERT INTO default.users (id, age, name, is_alive) VALUES (1, 20, 'Elena', TRUE
 SELECT * FROM default.users WHERE age > 30 AND age < 70 and name = 'Iryna' AND is_alive AND age != 10 AND age != 20 AND age != 49
 
 MariaDB results:
-	* Insert: 
+	* Insert:
 		Execution time: 72 ms
 	* Select:
 		Execution time: 2.072s
@@ -20,13 +20,13 @@ TouchHouse results:
 ClickHouse results:
 	* Insert:
 		Execution time: 12 ms
-	
+
 	* Select:
 		Execution time: 20 ms
 
 SQLite results:
 	* Insert:
-		Execution time: 20 ms                                                                                                                                                                                                                                                                           
+		Execution time: 20 ms
 
 	* Select:
 		Execution time: 430 ms
