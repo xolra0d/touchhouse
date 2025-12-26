@@ -2,10 +2,13 @@ mod command_runner;
 mod compiled_filter;
 mod execution;
 mod logical_plan;
+mod output_table;
 mod plan_optimization;
 mod sql_parser;
 
 pub use command_runner::CommandRunner;
+pub use output_table::{OutputColumn, OutputTable};
+pub use sql_parser::{Projection, ProjectionValue};
 
 use crate::error::{Error, Result};
 use crate::storage::ColumnDef;
@@ -29,7 +32,7 @@ pub fn validate_name(name: &str) -> bool {
 /// Returns:
 ///   * Ok: `ColumnDef` when column with matching name is found.
 ///   * Error: `ColumnNotFound` when no matching column exists.
-pub fn parse_ident(ident: &Ident, columns: &[ColumnDef]) -> Result<ColumnDef> {
+pub fn parse_column_def_ident(ident: &Ident, columns: &[ColumnDef]) -> Result<ColumnDef> {
     if let Some(column_def) = columns.iter().find(|col| col.name == ident.value) {
         Ok(column_def.clone())
     } else {

@@ -3,18 +3,31 @@ use sqlparser::dialect::ClickHouseDialect;
 use sqlparser::parser::Parser;
 
 use crate::error::{Error, Result};
+use crate::sql::output_table::OutputColumn;
 use crate::storage::table_metadata::TableSettings;
-use crate::storage::{Column, ColumnDef, TableDef};
+use crate::storage::{ColumnDef, TableDef, Value};
 
 /// Source for a Scan operation
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ScanSource {
     Table(TableDef),
     Subquery(Box<LogicalPlan>),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProjectionValue {
+    Value(Value),
+    ColumnDef(ColumnDef),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Projection {
+    pub alias: Option<String>,
+    pub source: ProjectionValue,
+}
+
 /// High level representation of the SQL query.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LogicalPlan {
     /// No tasks need to be done. Skip.
     Skip,
@@ -36,7 +49,7 @@ pub enum LogicalPlan {
     /// Insert values.
     Insert {
         table_def: TableDef,
-        columns: Vec<Column>,
+        columns: Vec<OutputColumn>,
     },
 
     DropDatabase {
@@ -54,7 +67,7 @@ pub enum LogicalPlan {
     },
 
     Projection {
-        columns: Vec<ColumnDef>,
+        columns: Vec<Projection>,
         plan: Box<LogicalPlan>,
     },
 
@@ -64,7 +77,7 @@ pub enum LogicalPlan {
     },
 
     OrderBy {
-        column_defs: Vec<Vec<ColumnDef>>,
+        column_defs: Vec<Vec<Projection>>,
         plan: Box<LogicalPlan>,
     },
 
@@ -117,7 +130,7 @@ impl TryFrom<&str> for LogicalPlan {
 }
 
 /// Lower level representation of the Logical Plan.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalPlan {
     /// No tasks need to be done. Skip.
     Skip,
@@ -139,7 +152,7 @@ pub enum PhysicalPlan {
     /// Insert values.
     Insert {
         table_def: TableDef,
-        columns: Vec<Column>,
+        columns: Vec<OutputColumn>,
     },
 
     DropDatabase {
@@ -155,9 +168,9 @@ pub enum PhysicalPlan {
     /// Select columns from table.
     Select {
         scan_source: ScanSource,
-        columns: Vec<ColumnDef>,
+        columns: Vec<Projection>,
         filter: Option<Box<Expr>>,
-        sort_by: Option<Vec<Vec<ColumnDef>>>,
+        sort_by: Option<Vec<Vec<Projection>>>,
         limit: Option<u64>,
         offset: u64,
     },

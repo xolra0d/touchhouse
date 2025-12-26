@@ -1,9 +1,11 @@
+import argparse
+import readline as _
 import socket
 import struct
-import argparse
+
 import msgpack
 import prettytable
-import readline as _
+
 
 def encode_message(message: str) -> bytes:
     message_bytes = message.encode("utf-8")
@@ -23,16 +25,18 @@ def decode_and_print_table(message_bytes: bytes):
         columns = columns[0] if columns else []
 
         for column in columns:
-            column_name = column[0][0]
+            column_name = column[0]
+            if column_name is None:
+                column_name = column[1][0]
             data = []
-            for val in column[1]:
+            for val in column[2]:
                 if isinstance(val, dict):
                     data.append(list(val.values())[0])
                 else:
                     data.append(val)
             table.add_column(column_name, data)
         print(table)
-        print(f"Total rows: {len(columns[0][1]) if columns and len(columns) > 0 else 0}")
+        print(f"Total rows: {len(columns[0][2]) if columns else 0}")
 
         secs = execution_time[0]
         nanos = execution_time[1]
@@ -41,6 +45,7 @@ def decode_and_print_table(message_bytes: bytes):
 
     elif error := message.get("Err"):
         print(f"Error: {error}")
+
 
 def run(host: str, port: int):
     try:
@@ -66,10 +71,12 @@ def run(host: str, port: int):
             while bytes_received < response_length:
                 chunk = sock.recv(min(response_length - bytes_received, 4096))
                 if not chunk:
-                    raise ValueError("Connection closed before complete message received")
+                    raise ValueError(
+                        "Connection closed before complete message received"
+                    )
                 chunks.append(chunk)
                 bytes_received += len(chunk)
-            message_bytes = b''.join(chunks)
+            message_bytes = b"".join(chunks)
 
             print()
             decode_and_print_table(message_bytes)

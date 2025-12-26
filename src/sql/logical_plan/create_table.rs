@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use crate::engines::EngineName;
 use crate::error::{Error, Result};
 use crate::sql::sql_parser::LogicalPlan;
-use crate::sql::{parse_ident, validate_name};
+use crate::sql::{parse_column_def_ident, validate_name};
 use crate::storage::table_metadata::TableSettings;
 use crate::storage::{ColumnDef, Constraints, TableDef, Value, ValueType};
 
@@ -74,7 +74,7 @@ impl LogicalPlan {
 
         let (order_by, primary_key) = match (&create_table.order_by, &create_table.primary_key) {
             (Some(order_by), Some(primary_key)) => {
-                let order_by = Self::parse_order_by(order_by, &columns)?;
+                let order_by = Self::create_parse_order_by(order_by, &columns)?;
                 let primary_key = Self::parse_primary_key(primary_key, &columns)?;
 
                 if primary_key.len() > order_by.len() {
@@ -90,7 +90,7 @@ impl LogicalPlan {
                 (order_by, primary_key)
             }
             (Some(order_by), None) => {
-                let order_by = Self::parse_order_by(order_by, &columns)?;
+                let order_by = Self::create_parse_order_by(order_by, &columns)?;
                 let primary_key = order_by.clone();
                 (order_by, primary_key)
             }
@@ -159,7 +159,7 @@ impl LogicalPlan {
     ///     3. If column name is not an identifier: `InvalidOrderBy`.
     ///     4. If column, not found in all columns, is found in ORDER BY: `InvalidOrderBy`.
     ///     5. If the same column is added: `InvalidOrderBy`.
-    fn parse_order_by(
+    fn create_parse_order_by(
         order_by_params: &OneOrManyWithParens<Expr>,
         columns: &[ColumnDef],
     ) -> Result<Vec<ColumnDef>> {
@@ -172,17 +172,20 @@ impl LogicalPlan {
 
         for param in order_by_params {
             let Expr::Identifier(param_ident) = param else {
-                return Err(Error::InvalidOrderBy);
+                return Err(Error::InvalidOrderBy(format!(
+                    "Could not parse order by param: {param}"
+                )));
             };
             let column_name = &param_ident.value;
 
-            let column_def = columns
-                .iter()
-                .find(|col| col.name == *column_name)
-                .ok_or(Error::InvalidOrderBy)?;
+            let column_def = columns.iter().find(|col| col.name == *column_name).ok_or(
+                Error::InvalidOrderBy(format!("Could not find column: {column_name}")),
+            )?;
 
             if !order_by_names.insert(column_name) {
-                return Err(Error::InvalidOrderBy);
+                return Err(Error::InvalidOrderBy(format!(
+                    "Duplicate column: {column_name}"
+                )));
             }
 
             order_by.push((*column_def).clone());
@@ -203,7 +206,9 @@ impl LogicalPlan {
     ///     5. If the same column is added: `InvalidOrderBy`.
     pub fn parse_primary_key(primary_key: &Expr, columns: &[ColumnDef]) -> Result<Vec<ColumnDef>> {
         match primary_key {
-            Expr::Identifier(primary_key) => parse_ident(primary_key, columns).map(|x| vec![x]),
+            Expr::Identifier(primary_key) => {
+                parse_column_def_ident(primary_key, columns).map(|x| vec![x])
+            }
             Expr::Tuple(primary_keys) => {
                 let mut primary_key = Vec::with_capacity(primary_keys.len());
                 for key in primary_keys {
@@ -212,7 +217,7 @@ impl LogicalPlan {
                             "Invalid specifier: {key}"
                         )));
                     };
-                    primary_key.push(parse_ident(ident, columns)?);
+                    primary_key.push(parse_column_def_ident(ident, columns)?);
                 }
 
                 Ok(primary_key)
@@ -220,7 +225,7 @@ impl LogicalPlan {
             Expr::Nested(primary_key) => {
                 // Added, because `sqlparser-rs` believes single element tuples are `Expr::Nested`
                 if let Expr::Identifier(primary_key) = primary_key.as_ref() {
-                    parse_ident(primary_key, columns).map(|x| vec![x])
+                    parse_column_def_ident(primary_key, columns).map(|x| vec![x])
                 } else {
                     Err(Error::InvalidPrimaryKey(
                         "Nested primary keys are unsupported".to_string(),
@@ -367,20 +372,20 @@ mod tests {
         let columns = vec![col1, col2];
 
         let empty_order_by = OneOrManyWithParens::Many(vec![]);
-        let result = LogicalPlan::parse_order_by(&empty_order_by, &columns);
+        let result = LogicalPlan::create_parse_order_by(&empty_order_by, &columns);
         assert!(result.is_err());
 
         let invalid_column = OneOrManyWithParens::Many(vec![Expr::Identifier(Ident::new(
             "nonexistent".to_string(),
         ))]);
-        let result = LogicalPlan::parse_order_by(&invalid_column, &columns);
+        let result = LogicalPlan::create_parse_order_by(&invalid_column, &columns);
         assert!(result.is_err());
 
         let duplicate = OneOrManyWithParens::Many(vec![
             Expr::Identifier(Ident::new("id".to_string())),
             Expr::Identifier(Ident::new("id".to_string())),
         ]);
-        let result = LogicalPlan::parse_order_by(&duplicate, &columns);
+        let result = LogicalPlan::create_parse_order_by(&duplicate, &columns);
         assert!(result.is_err());
     }
 
@@ -400,7 +405,7 @@ mod tests {
 
         let order_by =
             OneOrManyWithParens::Many(vec![Expr::Identifier(Ident::new("id".to_string()))]);
-        let result = LogicalPlan::parse_order_by(&order_by, &columns);
+        let result = LogicalPlan::create_parse_order_by(&order_by, &columns);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 1);
 
@@ -408,7 +413,7 @@ mod tests {
             Expr::Identifier(Ident::new("id".to_string())),
             Expr::Identifier(Ident::new("name".to_string())),
         ]);
-        let result = LogicalPlan::parse_order_by(&order_by, &columns);
+        let result = LogicalPlan::create_parse_order_by(&order_by, &columns);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 2);
     }

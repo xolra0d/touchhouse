@@ -1,6 +1,6 @@
 use crate::sql::sql_parser::{LogicalPlan, ScanSource};
 
-use crate::storage::ColumnDef;
+use crate::sql::Projection;
 use sqlparser::ast::{BinaryOperator, Expr};
 
 impl LogicalPlan {
@@ -23,7 +23,7 @@ impl LogicalPlan {
                 .merge_filters(Vec::new())
                 .merge_projections(Vec::new())
                 .merge_order_by(Vec::new())
-                .merge_limit(None, 0),
+                .merge_offset_and_limit(None, 0),
         }
     }
 
@@ -106,7 +106,7 @@ impl LogicalPlan {
         }
     }
 
-    fn merge_projections(self, mut columns: Vec<ColumnDef>) -> Self {
+    fn merge_projections(self, mut columns: Vec<Projection>) -> Self {
         match self {
             Self::Projection {
                 columns: proj_cols,
@@ -150,7 +150,7 @@ impl LogicalPlan {
         }
     }
 
-    fn merge_order_by(self, mut order_by: Vec<Vec<ColumnDef>>) -> Self {
+    fn merge_order_by(self, mut order_by: Vec<Vec<Projection>>) -> Self {
         match self {
             Self::OrderBy { column_defs, plan } => {
                 // todo: remove unnecessary repeating order_by
@@ -189,7 +189,7 @@ impl LogicalPlan {
         }
     }
 
-    fn merge_limit(self, mut limit: Option<u64>, mut offset: u64) -> Self {
+    fn merge_offset_and_limit(self, mut limit: Option<u64>, mut offset: u64) -> Self {
         match self {
             Self::Limit {
                 limit: limit_inner,
@@ -203,7 +203,7 @@ impl LogicalPlan {
                 };
                 offset = offset.checked_add(offset_inner).expect("offset overflow"); // todo: consider checking in logical select
 
-                plan.merge_limit(limit, offset)
+                plan.merge_offset_and_limit(limit, offset)
             }
             Self::OrderBy { .. } | Self::Projection { .. } => {
                 if limit.is_none() && offset == 0 {
@@ -252,6 +252,7 @@ mod tests {
     use crate::sql::sql_parser::{LogicalPlan, ScanSource};
     use crate::storage::{ColumnDef, Constraints, TableDef, ValueType};
 
+    use crate::sql::{Projection, ProjectionValue};
     use sqlparser::ast::{Expr, Ident};
     use sqlparser::tokenizer::Span;
 
@@ -263,7 +264,7 @@ mod tests {
         }
     }
 
-    fn projection(columns: Vec<ColumnDef>, plan: LogicalPlan) -> LogicalPlan {
+    fn projection(columns: Vec<Projection>, plan: LogicalPlan) -> LogicalPlan {
         LogicalPlan::Projection {
             columns,
             plan: Box::new(plan),
@@ -296,16 +297,16 @@ mod tests {
         LogicalPlan::Scan { source }
     }
 
-    fn order_by(column_defs: Vec<Vec<ColumnDef>>, plan: LogicalPlan) -> LogicalPlan {
+    fn order_by(column_defs: Vec<Vec<Projection>>, plan: LogicalPlan) -> LogicalPlan {
         LogicalPlan::OrderBy {
             column_defs,
             plan: Box::new(plan),
         }
     }
 
-    fn limit(limit: Option<u64>, offset: u64, plan: LogicalPlan) -> LogicalPlan {
+    fn limit(limit: u64, offset: u64, plan: LogicalPlan) -> LogicalPlan {
         LogicalPlan::Limit {
-            limit,
+            limit: Some(limit),
             offset,
             plan: Box::new(plan),
         }
@@ -314,41 +315,93 @@ mod tests {
     fn get_start_stage() -> LogicalPlan {
         // `SELECT age, name FROM (SELECT age, name, id FROM (SELECT age, name, id FROM table WHERE filter1 ORDER BY age, id LIMIT 4 OFFSET 6) WHERE filter2) WHERE filter3 ORDER BY age, name LIMIT 2 OFFSET 2`
         limit(
-            Some(2),
+            2,
             2,
             order_by(
                 vec![vec![
-                    str_column("age".to_string()),
-                    str_column("name".to_string()),
+                    Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                    },
+                    Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                    },
                 ]],
                 projection(
                     vec![
-                        str_column("age".to_string()),
-                        str_column("name".to_string()),
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                        },
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                        },
                     ],
                     filter(
                         identifier("filter3".to_string()),
                         scan(ScanSource::Subquery(Box::new(projection(
                             vec![
-                                str_column("age".to_string()),
-                                str_column("name".to_string()),
-                                str_column("id".to_string()),
+                                Projection {
+                                    alias: None,
+                                    source: ProjectionValue::ColumnDef(str_column(
+                                        "age".to_string(),
+                                    )),
+                                },
+                                Projection {
+                                    alias: None,
+                                    source: ProjectionValue::ColumnDef(str_column(
+                                        "name".to_string(),
+                                    )),
+                                },
+                                Projection {
+                                    alias: None,
+                                    source: ProjectionValue::ColumnDef(str_column(
+                                        "id".to_string(),
+                                    )),
+                                },
                             ],
                             filter(
                                 identifier("filter2".to_string()),
                                 scan(ScanSource::Subquery(Box::new(limit(
-                                    Some(4),
+                                    4,
                                     6,
                                     order_by(
                                         vec![vec![
-                                            str_column("age".to_string()),
-                                            str_column("id".to_string()),
+                                            Projection {
+                                                alias: None,
+                                                source: ProjectionValue::ColumnDef(str_column(
+                                                    "age".to_string(),
+                                                )),
+                                            },
+                                            Projection {
+                                                alias: None,
+                                                source: ProjectionValue::ColumnDef(str_column(
+                                                    "id".to_string(),
+                                                )),
+                                            },
                                         ]],
                                         projection(
                                             vec![
-                                                str_column("age".to_string()),
-                                                str_column("name".to_string()),
-                                                str_column("id".to_string()),
+                                                Projection {
+                                                    alias: None,
+                                                    source: ProjectionValue::ColumnDef(str_column(
+                                                        "age".to_string(),
+                                                    )),
+                                                },
+                                                Projection {
+                                                    alias: None,
+                                                    source: ProjectionValue::ColumnDef(str_column(
+                                                        "name".to_string(),
+                                                    )),
+                                                },
+                                                Projection {
+                                                    alias: None,
+                                                    source: ProjectionValue::ColumnDef(str_column(
+                                                        "id".to_string(),
+                                                    )),
+                                                },
                                             ],
                                             filter(
                                                 identifier("filter1".to_string()),
@@ -404,41 +457,93 @@ mod tests {
         let plan = get_start_stage();
 
         let merged = limit(
-            Some(2),
+            2,
             2,
             order_by(
                 vec![vec![
-                    str_column("age".to_string()),
-                    str_column("name".to_string()),
+                    Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                    },
+                    Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                    },
                 ]],
                 projection(
                     vec![
-                        str_column("age".to_string()),
-                        str_column("name".to_string()),
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                        },
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                        },
                     ],
                     filter(
                         identifier("filter3".to_string()),
                         projection(
                             vec![
-                                str_column("age".to_string()),
-                                str_column("name".to_string()),
-                                str_column("id".to_string()),
+                                Projection {
+                                    alias: None,
+                                    source: ProjectionValue::ColumnDef(str_column(
+                                        "age".to_string(),
+                                    )),
+                                },
+                                Projection {
+                                    alias: None,
+                                    source: ProjectionValue::ColumnDef(str_column(
+                                        "name".to_string(),
+                                    )),
+                                },
+                                Projection {
+                                    alias: None,
+                                    source: ProjectionValue::ColumnDef(str_column(
+                                        "id".to_string(),
+                                    )),
+                                },
                             ],
                             filter(
                                 identifier("filter2".to_string()),
                                 limit(
-                                    Some(4),
+                                    4,
                                     6,
                                     order_by(
                                         vec![vec![
-                                            str_column("age".to_string()),
-                                            str_column("id".to_string()),
+                                            Projection {
+                                                alias: None,
+                                                source: ProjectionValue::ColumnDef(str_column(
+                                                    "age".to_string(),
+                                                )),
+                                            },
+                                            Projection {
+                                                alias: None,
+                                                source: ProjectionValue::ColumnDef(str_column(
+                                                    "id".to_string(),
+                                                )),
+                                            },
                                         ]],
                                         projection(
                                             vec![
-                                                str_column("age".to_string()),
-                                                str_column("name".to_string()),
-                                                str_column("id".to_string()),
+                                                Projection {
+                                                    alias: None,
+                                                    source: ProjectionValue::ColumnDef(str_column(
+                                                        "age".to_string(),
+                                                    )),
+                                                },
+                                                Projection {
+                                                    alias: None,
+                                                    source: ProjectionValue::ColumnDef(str_column(
+                                                        "name".to_string(),
+                                                    )),
+                                                },
+                                                Projection {
+                                                    alias: None,
+                                                    source: ProjectionValue::ColumnDef(str_column(
+                                                        "id".to_string(),
+                                                    )),
+                                                },
                                             ],
                                             filter(
                                                 identifier("filter1".to_string()),
@@ -486,37 +591,83 @@ mod tests {
         let plan = get_start_stage().merge_scans();
 
         let merged = limit(
-            Some(2),
+            2,
             2,
             order_by(
                 vec![vec![
-                    str_column("age".to_string()),
-                    str_column("name".to_string()),
+                    Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                    },
+                    Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                    },
                 ]],
                 projection(
                     vec![
-                        str_column("age".to_string()),
-                        str_column("name".to_string()),
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                        },
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                        },
                     ],
                     projection(
                         vec![
-                            str_column("age".to_string()),
-                            str_column("name".to_string()),
-                            str_column("id".to_string()),
+                            Projection {
+                                alias: None,
+                                source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                            },
+                            Projection {
+                                alias: None,
+                                source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                            },
+                            Projection {
+                                alias: None,
+                                source: ProjectionValue::ColumnDef(str_column("id".to_string())),
+                            },
                         ],
                         limit(
-                            Some(4),
+                            4,
                             6,
                             order_by(
                                 vec![vec![
-                                    str_column("age".to_string()),
-                                    str_column("id".to_string()),
+                                    Projection {
+                                        alias: None,
+                                        source: ProjectionValue::ColumnDef(str_column(
+                                            "age".to_string(),
+                                        )),
+                                    },
+                                    Projection {
+                                        alias: None,
+                                        source: ProjectionValue::ColumnDef(str_column(
+                                            "id".to_string(),
+                                        )),
+                                    },
                                 ]],
                                 projection(
                                     vec![
-                                        str_column("age".to_string()),
-                                        str_column("name".to_string()),
-                                        str_column("id".to_string()),
+                                        Projection {
+                                            alias: None,
+                                            source: ProjectionValue::ColumnDef(str_column(
+                                                "age".to_string(),
+                                            )),
+                                        },
+                                        Projection {
+                                            alias: None,
+                                            source: ProjectionValue::ColumnDef(str_column(
+                                                "name".to_string(),
+                                            )),
+                                        },
+                                        Projection {
+                                            alias: None,
+                                            source: ProjectionValue::ColumnDef(str_column(
+                                                "id".to_string(),
+                                            )),
+                                        },
                                     ],
                                     filter(
                                         combine_filters(vec![
@@ -562,25 +713,47 @@ mod tests {
         let plan = get_start_stage().merge_scans().merge_filters(Vec::new());
 
         let merged = limit(
-            Some(2),
+            2,
             2,
             order_by(
                 vec![vec![
-                    str_column("age".to_string()),
-                    str_column("name".to_string()),
+                    Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                    },
+                    Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                    },
                 ]],
                 limit(
-                    Some(4),
+                    4,
                     6,
                     order_by(
                         vec![vec![
-                            str_column("age".to_string()),
-                            str_column("id".to_string()),
+                            Projection {
+                                alias: None,
+                                source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                            },
+                            Projection {
+                                alias: None,
+                                source: ProjectionValue::ColumnDef(str_column("id".to_string())),
+                            },
                         ]],
                         projection(
                             vec![
-                                str_column("age".to_string()),
-                                str_column("name".to_string()),
+                                Projection {
+                                    alias: None,
+                                    source: ProjectionValue::ColumnDef(str_column(
+                                        "age".to_string(),
+                                    )),
+                                },
+                                Projection {
+                                    alias: None,
+                                    source: ProjectionValue::ColumnDef(str_column(
+                                        "name".to_string(),
+                                    )),
+                                },
                             ],
                             filter(
                                 combine_filters(vec![
@@ -624,23 +797,44 @@ mod tests {
             .merge_projections(Vec::new());
 
         let merged = limit(
-            Some(2),
+            2,
             2,
             limit(
-                Some(4),
+                4,
                 6,
                 order_by(
                     vec![
-                        vec![str_column("age".to_string()), str_column("id".to_string())],
                         vec![
-                            str_column("age".to_string()),
-                            str_column("name".to_string()),
+                            Projection {
+                                alias: None,
+                                source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                            },
+                            Projection {
+                                alias: None,
+                                source: ProjectionValue::ColumnDef(str_column("id".to_string())),
+                            },
+                        ],
+                        vec![
+                            Projection {
+                                alias: None,
+                                source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                            },
+                            Projection {
+                                alias: None,
+                                source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                            },
                         ],
                     ],
                     projection(
                         vec![
-                            str_column("age".to_string()),
-                            str_column("name".to_string()),
+                            Projection {
+                                alias: None,
+                                source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                            },
+                            Projection {
+                                alias: None,
+                                source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                            },
                         ],
                         filter(
                             combine_filters(vec![
@@ -659,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_limit() {
+    fn test_merge_limit_and_offset() {
         // Limit: 2 Offset: 2
         //      Limit: 4 Offset 6
         //          Order by: [age, id], [age, name]
@@ -680,20 +874,41 @@ mod tests {
             .merge_order_by(Vec::new());
 
         let merged = limit(
-            Some(2),
+            2,
             8,
             order_by(
                 vec![
-                    vec![str_column("age".to_string()), str_column("id".to_string())],
                     vec![
-                        str_column("age".to_string()),
-                        str_column("name".to_string()),
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                        },
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("id".to_string())),
+                        },
+                    ],
+                    vec![
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                        },
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                        },
                     ],
                 ],
                 projection(
                     vec![
-                        str_column("age".to_string()),
-                        str_column("name".to_string()),
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                        },
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                        },
                     ],
                     filter(
                         combine_filters(vec![
@@ -707,21 +922,30 @@ mod tests {
             ),
         );
 
-        assert_eq!(plan.merge_limit(None, 0), merged);
+        assert_eq!(plan.merge_offset_and_limit(None, 0), merged);
     }
 
     #[test]
     fn debug() {
         // SELECT name FROM (SELECT name, age FROM default.users WHERE id > 1) LIMIT 2
         let plan = limit(
-            Some(2),
+            2,
             0,
             projection(
-                vec![str_column("name".to_string())],
+                vec![Projection {
+                    alias: None,
+                    source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                }],
                 scan(ScanSource::Subquery(Box::new(projection(
                     vec![
-                        str_column("name".to_string()),
-                        str_column("age".to_string()),
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                        },
+                        Projection {
+                            alias: None,
+                            source: ProjectionValue::ColumnDef(str_column("age".to_string())),
+                        },
                     ],
                     filter(
                         identifier("filter1".to_string()),
@@ -732,10 +956,13 @@ mod tests {
         );
 
         let merged = limit(
-            Some(2),
+            2,
             0,
             projection(
-                vec![str_column("name".to_string())],
+                vec![Projection {
+                    alias: None,
+                    source: ProjectionValue::ColumnDef(str_column("name".to_string())),
+                }],
                 filter(
                     identifier("filter1".to_string()),
                     scan(ScanSource::Table(table_def())),

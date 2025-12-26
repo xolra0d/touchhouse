@@ -2,8 +2,9 @@ use sqlparser::ast::{Expr, Insert, SetExpr, TableObject, UnaryOperator, Value as
 
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
+use crate::sql::output_table::OutputColumn;
 use crate::sql::sql_parser::LogicalPlan;
-use crate::storage::{Column, TableDef, Value};
+use crate::storage::{TableDef, Value};
 
 impl LogicalPlan {
     /// Parses INSERT statement into `LogicalPlan::Insert` variant.
@@ -88,11 +89,13 @@ impl LogicalPlan {
             }
         }
 
-        let mut columns: Vec<Column> = insert_columns
+        let mut columns: Vec<OutputColumn> = insert_columns
             .into_iter()
-            .map(|x| Column {
+            .map(|x| OutputColumn {
+                alias: None,
                 column_def: x,
                 data: Vec::new(),
+                is_virtual: false,
             })
             .collect();
 
@@ -180,9 +183,11 @@ impl LogicalPlan {
                     continue;
                 }
             };
-            columns.push(Column {
+            columns.push(OutputColumn {
+                alias: None,
                 column_def: column_def.clone(),
                 data: vec![default_value_ref.clone(); source.rows.len()],
+                is_virtual: false,
             });
         }
 

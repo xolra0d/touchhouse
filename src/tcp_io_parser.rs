@@ -3,14 +3,13 @@
 //   * Using `Encoder` trait we encode Received Result<OutputTable, T: Display>
 //     Typically, generic T is `Error`, which then converted using `ToString` trait
 
+use crate::sql::OutputTable;
 use derive_more::Display;
 use rmp_serde::encode::Error as RMPError;
 use serde::Serialize;
 use std::fmt;
 use tokio_util::bytes::{Buf, BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
-
-use crate::storage::OutputTable;
 
 type HeaderType = u64;
 const HEADER_SIZE: usize = size_of::<HeaderType>();

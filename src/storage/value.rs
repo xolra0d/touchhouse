@@ -84,6 +84,24 @@ impl TryFrom<(SQLValue, &ValueType)> for Value {
     }
 }
 
+impl Value {
+    pub fn try_from_untyped(value: SQLValue) -> Result<Value> {
+        match value {
+            SQLValue::Null => Ok(Value::Null),
+            SQLValue::SingleQuotedString(s)
+            | SQLValue::TripleSingleQuotedString(s)
+            | SQLValue::TripleDoubleQuotedString(s) => Ok(Value::String(s)),
+            SQLValue::Number(number, _) => Ok(Value::Int64(number.parse().map_err(|_| {
+                Error::InvalidSource(format!("Failed to parse number as Int64: {number}"))
+            })?)),
+            SQLValue::Boolean(b) => Ok(Value::Bool(b)),
+            _ => Err(Error::InvalidSource(format!(
+                "Unsupported SQL value type: {value:?}"
+            ))),
+        }
+    }
+}
+
 #[derive(
     Debug, Clone, Hash, PartialEq, Eq, Serialize, RkyvSerialize, RkyvArchive, RkyvDeserialize,
 )]

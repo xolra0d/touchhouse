@@ -33,8 +33,8 @@ pub enum Error {
     InvalidEngineName,
     #[display("Unsupported table option: {_0}")]
     UnsupportedTableOption(String),
-    #[display("Invalid ORDER BY.")]
-    InvalidOrderBy,
+    #[display("Invalid ORDER BY: {_0}")]
+    InvalidOrderBy(String),
     #[display("Invalid PRIMARY KEY: {_0}")]
     InvalidPrimaryKey(String),
     #[display("Invalid pair of ORDER BY and PRIMARY KEY. PRIMARY KEY should be prefix of ORDER BY")]
@@ -69,6 +69,14 @@ pub enum Error {
     InvalidLimitValue(String),
     #[display("Invalid number of params specified: {_0}")]
     InvalidNumberOfParamsSpecified(String),
+    #[display("Unknown function: {_0}")]
+    UnknownFunction(String),
+    #[display("Nested functions are not supported: {_0}")]
+    UnsupportedNestedFunctions(String),
+    #[display("Named parameters are not supported: {_0}")]
+    UnsupportedNamedParameters(String),
+    #[display("Part ({_0}) does not have any columns.")]
+    PartDoesNotHaveColumns(String),
 
     // mod engines
     #[display("No ORDER BY columns found")]

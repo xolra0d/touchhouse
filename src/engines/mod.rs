@@ -4,7 +4,8 @@ mod replacing_merge_tree;
 use crate::engines::merge_tree::MergeTreeEngine;
 use crate::engines::replacing_merge_tree::ReplacingMergeTreeEngine;
 use crate::error::{Error, Result};
-use crate::storage::Column;
+use crate::sql::OutputColumn;
+use crate::sql::Projection;
 use crate::storage::ColumnDef;
 
 use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
@@ -14,15 +15,18 @@ pub trait Engine {
     /// Orders columns for insert by `order_by`.
     fn order_columns(
         &self,
-        columns: Vec<Column>,
-        order_by: &[ColumnDef],
+        columns: Vec<OutputColumn>,
+        order_by: &[Projection],
         primary_key: &[ColumnDef],
-    ) -> Result<Vec<Column>>;
+    ) -> Result<Vec<OutputColumn>>;
 }
 
 /// Used for storing engine name in metadata.
-#[derive(Debug, Eq, Hash, PartialEq, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize)]
+#[derive(
+    Default, Debug, Eq, Hash, PartialEq, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize,
+)]
 pub enum EngineName {
+    #[default]
     MergeTree,
     ReplacingMergeTree,
 }
