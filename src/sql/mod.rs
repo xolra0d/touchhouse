@@ -43,20 +43,6 @@ pub fn parse_column_def_ident(ident: &Ident, columns: &[ColumnDef]) -> Result<Co
     }
 }
 
-// pub fn parse_proj_ident(ident: &Ident, projections: &[Projection]) -> Result<Projection> {
-//     if let Some(column_def) = projections
-//         .iter()
-//         .find(|proj| *proj == &ident.value.as_str())
-//     {
-//         Ok(column_def.clone())
-//     } else {
-//         Err(Error::ColumnNotFound(format!(
-//             "Column specified ({}) was not found",
-//             ident.value
-//         )))
-//     }
-// }
-
 #[cfg(test)]
 pub mod tests {
     use crate::sql::validate_name;

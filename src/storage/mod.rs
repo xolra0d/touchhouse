@@ -55,12 +55,12 @@ pub struct Column {
 }
 
 impl Column {
-    pub fn into_output_column(self) -> OutputColumn {
+    pub fn into_output_column_physical(self) -> OutputColumn {
         OutputColumn {
             alias: None,
             column_def: self.column_def,
             data: self.data,
-            is_virtual: true,
+            is_virtual: false,
         }
     }
 }

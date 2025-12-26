@@ -44,7 +44,7 @@ impl CommandRunner {
             return Err(Error::TableNotFound);
         };
 
-        let optimal_strategy = Strategy::design_new(
+        let optimal_strategy = Strategy::new(
             limit.map(|x| x as usize),
             offset as usize,
             table_config

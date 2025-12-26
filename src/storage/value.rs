@@ -92,7 +92,7 @@ impl Value {
             | SQLValue::TripleSingleQuotedString(s)
             | SQLValue::TripleDoubleQuotedString(s) => Ok(Value::String(s)),
             SQLValue::Number(number, _) => Ok(Value::Int64(number.parse().map_err(|_| {
-                Error::InvalidSource(format!("Failed to parse number as Int64r: {number}"))
+                Error::InvalidSource(format!("Failed to parse number as Int64: {number}"))
             })?)),
             SQLValue::Boolean(b) => Ok(Value::Bool(b)),
             _ => Err(Error::InvalidSource(format!(

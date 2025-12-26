@@ -1,6 +1,5 @@
 use crate::sql::sql_parser::LogicalPlan;
 
-mod dead_query_elimination;
 mod query_flattening;
 
 impl LogicalPlan {

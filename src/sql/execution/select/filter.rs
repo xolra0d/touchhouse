@@ -23,7 +23,7 @@ impl FilterLogic {
         strategy: &Strategy,
     ) -> Result<Vec<(&'a TablePartInfo, Vec<GranuleMask>)>> {
         let Some(filter) = filter_expr else {
-            return Self::no_fiter_fallback(table_def, table_config);
+            return Self::no_filter_fallback(table_def, table_config);
         };
 
         let compiled_filter =
@@ -152,7 +152,7 @@ impl FilterLogic {
         Ok(total_parts_mask)
     }
 
-    fn no_fiter_fallback<'a>(
+    fn no_filter_fallback<'a>(
         table_def: &TableDef,
         table_config: &'a TableConfig,
     ) -> Result<Vec<(&'a TablePartInfo, Vec<GranuleMask>)>> {

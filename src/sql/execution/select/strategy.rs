@@ -4,7 +4,7 @@ pub struct Strategy {
 }
 
 impl Strategy {
-    pub fn design_new(
+    pub fn new(
         limit: Option<usize>,
         offset: usize,
         in_table_lines: usize,
