@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use touchhouse::{
     accept_conn, build_logger, init_conn_semaphore, init_listener, load_parts, log_startup_info,
-    reject_32bit_systems, spawn_background_merges
+    reject_32bit_systems, spawn_background_merges,
 };
 
 #[tokio::main]

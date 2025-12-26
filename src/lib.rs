@@ -24,7 +24,7 @@ use crate::tcp_io_parser::Parser;
 pub fn reject_32bit_systems() -> Result<(), String> {
     if size_of::<usize>() == size_of::<u32>() {
         Err(format!(
-            "32bit systems are not supported, because they are not optimal for OLAP workload which could require gigabytes of ram and where the number of rows could exceed {}",
+            "32bit systems are not supported, as they are not optimal for OLAP workload which could require gigabytes of ram and where the number of rows could exceed {}",
             u32::MAX
         ))
     } else {
