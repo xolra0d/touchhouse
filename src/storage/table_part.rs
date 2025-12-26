@@ -1,14 +1,12 @@
 use crate::engines::EngineConfig;
 use crate::error::{Error, Result};
-use crate::runtime_config::{TABLE_DATA, TableConfig};
+use crate::runtime_config::TABLE_DATA;
 use crate::storage::compression::{compress_bytes, decompress_bytes};
-use crate::storage::table_metadata::TableMetadata;
 use crate::storage::{Column, ColumnDef, CompressionType, TableDef, Value};
 
 use crate::sql::{OutputColumn, Projection, ProjectionValue};
-use log::{info, warn};
 use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 pub const MAGIC_BYTES_COLUMN: &[u8] = b"THDATA".as_slice();
@@ -379,129 +377,4 @@ fn generate_indexes(
         });
     }
     marks
-}
-
-/// Loads all table parts from filesystem into memory on startup.
-///
-/// Scans all databases and tables, loads part indexes, and populates `TABLE_DATA`.
-/// Cleans up any leftover raw directories from crashes.
-///
-/// Returns: Ok or `CouldNotInsertData` on critical failure
-pub fn load_all_parts_on_startup(db_dir: &Path) -> Result<()> {
-    info!(
-        "Loading parts from database directory: {}",
-        db_dir.display()
-    );
-
-    if !db_dir.exists() {
-        warn!("Database directory does not exist: {}", db_dir.display());
-        return Ok(());
-    }
-
-    let databases = std::fs::read_dir(db_dir).map_err(|error| {
-        Error::CouldNotInsertData(format!("Failed to read database directory: {error}"))
-    })?;
-
-    for database_entry in databases {
-        let database_entry = database_entry.map_err(|error| {
-            Error::CouldNotInsertData(format!("Failed to read database entry: {error}"))
-        })?;
-
-        let database_path = database_entry.path();
-        if !database_path.is_dir() {
-            continue;
-        }
-
-        let database_name = database_entry.file_name().to_string_lossy().to_string();
-
-        let tables = std::fs::read_dir(&database_path).map_err(|error| {
-            Error::CouldNotInsertData(format!(
-                "Failed to read tables in database {database_name}: {error}"
-            ))
-        })?;
-
-        for table_entry in tables {
-            let table_entry = table_entry.map_err(|error| {
-                Error::CouldNotInsertData(format!("Failed to read table entry: {error}"))
-            })?;
-
-            let table_path = table_entry.path();
-            if !table_path.is_dir() {
-                continue;
-            }
-
-            let table_name = table_entry.file_name().to_string_lossy().to_string();
-            let table_def = TableDef {
-                database: database_name.clone(),
-                table: table_name.clone(),
-            };
-
-            let table_metadata = TableMetadata::read_from(&table_def)?;
-
-            TABLE_DATA.insert(
-                table_def.clone(),
-                TableConfig {
-                    metadata: table_metadata,
-                    infos: Vec::new(),
-                },
-            );
-
-            let parts = std::fs::read_dir(&table_path).map_err(|error| {
-                Error::CouldNotInsertData(format!(
-                    "Failed to read parts in table {table_def}: {error}"
-                ))
-            })?;
-
-            for part_entry in parts {
-                let part_entry = part_entry.map_err(|error| {
-                    Error::CouldNotInsertData(format!("Failed to read part entry: {error}"))
-                })?;
-
-                let part_path = part_entry.path();
-                let part_name = part_entry.file_name().to_string_lossy().to_string();
-
-                if !part_path.is_dir() || part_name.starts_with('.') {
-                    continue;
-                }
-
-                if part_name == "raw" {
-                    match std::fs::remove_dir_all(&part_path) {
-                        Ok(()) => {
-                            info!("Removed raw directory for table {table_def}");
-                        }
-                        Err(e) => {
-                            warn!("Failed to remove raw directory for table {table_def}: {e}");
-                        }
-                    }
-                    continue;
-                }
-
-                if Path::new(&part_path)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("old"))
-                {
-                    warn!(
-                        "Found old part: {part_name}. Consult the logs to make the decision about removal."
-                    );
-                    continue;
-                }
-
-                match TablePartInfo::read_from(&table_def, &part_name) {
-                    Ok(info) => {
-                        let Some(mut result) = TABLE_DATA.get_mut(&table_def) else {
-                            continue;
-                        };
-                        result.infos.push(info);
-                        info!("Loaded part {part_name} for table {table_def}");
-                    }
-                    Err(e) => {
-                        warn!("Failed to load part {part_name} for table {table_def}: {e:?}");
-                    }
-                }
-            }
-        }
-    }
-
-    info!("Finished loading parts");
-    Ok(())
 }

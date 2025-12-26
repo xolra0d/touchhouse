@@ -1,15 +1,14 @@
 use std::sync::Arc;
-
 use touchhouse::{
-    accept_conn, build_logger, init_conn_semaphore, init_listener, load_parts, log_startup_info,
-    reject_32bit_systems, spawn_background_merges,
+    accept_conn, build_logger, init_conn_semaphore, init_listener, load_all_parts_on_startup,
+    log_startup_info, reject_32bit_systems, spawn_background_merges,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
     reject_32bit_systems()?;
     build_logger();
-    load_parts()?;
+    load_all_parts_on_startup()?;
     spawn_background_merges();
     let conn_semaphore = init_conn_semaphore();
     let listener = init_listener().await?;

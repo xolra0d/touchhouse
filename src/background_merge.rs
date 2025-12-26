@@ -1,8 +1,8 @@
+use crate::config::CONFIG;
 use crate::error::{Error, Result};
 use crate::runtime_config::{DATABASE_LOAD, TABLE_DATA};
 use crate::storage::{Column, TableDef, TablePart, TablePartInfo, Value};
 
-use crate::config::CONFIG;
 use log::{error, info, warn};
 use uuid::Uuid;
 
@@ -268,16 +268,16 @@ struct MergeData {
 }
 
 fn find_two_parts() -> Option<MergeData> {
-    let data = TABLE_DATA.iter().find(|x| x.infos.len() > 1)?;
+    let table = TABLE_DATA.iter().find(|x| x.infos.len() > 1)?;
 
-    let mut names: Vec<_> = data.infos.iter().map(|x| &x.name).collect();
-    names.sort_by(|a, b| uuid_str_cmp(a, b));
+    let mut names: Vec<_> = table.infos.iter().map(|x| &x.name).collect();
+    names.sort_unstable_by(|a, b| uuid_str_cmp(a, b));
 
-    let part_0 = data.infos.iter().find(|x| x.name == *names[0])?;
-    let part_1 = data.infos.iter().find(|x| x.name == *names[1])?;
+    let part_0 = table.infos.iter().find(|x| x.name == *names[0])?;
+    let part_1 = table.infos.iter().find(|x| x.name == *names[1])?;
 
     Some(MergeData {
-        table_def: data.pair().0.clone(),
+        table_def: table.pair().0.clone(),
         part_0: part_0.clone(),
         part_1: part_1.clone(),
     })

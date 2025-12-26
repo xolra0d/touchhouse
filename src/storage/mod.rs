@@ -9,9 +9,7 @@ pub use crate::storage::compression::CompressionType;
 use crate::storage::table_metadata::TABLE_METADATA_FILENAME;
 pub use crate::storage::table_metadata::{TableMetadata, TableSchema, TableSettings};
 use crate::storage::table_part::MAGIC_BYTES_COLUMN;
-pub use crate::storage::table_part::{
-    Mark, MarkInfo, TablePart, TablePartInfo, load_all_parts_on_startup,
-};
+pub use crate::storage::table_part::{Mark, MarkInfo, TablePart, TablePartInfo};
 pub use crate::storage::value::{Value, ValueType};
 
 use crate::sql::OutputColumn;
@@ -166,7 +164,7 @@ pub struct TableDef {
 
 impl fmt::Display for TableDef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "({}.{})", self.database, self.table)
+        write!(f, "{}.{}", self.database, self.table)
     }
 }
 
