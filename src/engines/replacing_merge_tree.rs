@@ -56,11 +56,12 @@ impl Engine for ReplacingMergeTreeEngine {
         let mut order_by_indexes = Vec::new();
         for proj in order_by {
             let Some(position) = columns.iter().position(|col| {
-                if let ProjectionValue::ColumnDef(col_def) = &proj.source {
-                    col.column_def == *col_def
-                } else {
-                    false
-                }
+                // if let ProjectionValue::ColumnDef(col_def) = &proj.source {
+                //     col.column_def == *col_def
+                // } else {
+                //     false
+                // }
+                *proj == col.proj
             }) else {
                 continue;
             };
@@ -68,8 +69,14 @@ impl Engine for ReplacingMergeTreeEngine {
         }
 
         let mut pk_indexes = Vec::new();
-        for col_def in primary_key {
-            let Some(position) = columns.iter().position(|col| &col.column_def == col_def) else {
+        for pk_col_def in primary_key {
+            let Some(position) = columns.iter().position(|col| {
+                if let ProjectionValue::ColumnDef(col_def) = &col.proj.source {
+                    pk_col_def == col_def
+                } else {
+                    false
+                }
+            }) else {
                 continue;
             };
             pk_indexes.push(position);
@@ -123,14 +130,15 @@ mod tests {
 
     fn string_column(name: String, data: Vec<&str>) -> OutputColumn {
         OutputColumn {
-            alias: None,
-            column_def: ColumnDef {
-                name,
-                field_type: ValueType::String,
-                constraints: Constraints::default(),
+            proj: Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(ColumnDef {
+                    name,
+                    field_type: ValueType::String,
+                    constraints: Constraints::default(),
+                }),
             },
             data: data.iter().map(|x| Value::String(x.to_string())).collect(),
-            is_virtual: true,
         }
     }
 
@@ -146,18 +154,26 @@ mod tests {
         let order_by = vec![
             Projection {
                 alias: None,
-                source: ProjectionValue::ColumnDef(col_1.column_def.clone()),
+                source: col_1.proj.source.clone(),
             },
             Projection {
                 alias: None,
-                source: ProjectionValue::ColumnDef(col_2.column_def.clone()),
+                source: col_2.proj.source.clone(),
             },
             Projection {
                 alias: None,
-                source: ProjectionValue::ColumnDef(col_3.column_def.clone()),
+                source: col_3.proj.source.clone(),
             },
         ];
-        let primary_key = vec![col_1.column_def.clone(), col_2.column_def.clone()];
+
+        let ProjectionValue::ColumnDef(col_1_col_def) = col_1.proj.source.clone() else {
+            unreachable!()
+        };
+        let ProjectionValue::ColumnDef(col_2_col_def) = col_2.proj.source.clone() else {
+            unreachable!()
+        };
+
+        let primary_key = vec![col_1_col_def, col_2_col_def];
 
         let merged = vec![
             string_column("col_1".to_string(), vec!["a", "b", "b", "c", "d"]),
@@ -188,14 +204,18 @@ mod tests {
         let order_by = vec![
             Projection {
                 alias: None,
-                source: ProjectionValue::ColumnDef(col_1.column_def.clone()),
+                source: col_1.proj.source.clone(),
             },
             Projection {
                 alias: None,
-                source: ProjectionValue::ColumnDef(col_2.column_def.clone()),
+                source: col_2.proj.source.clone(),
             },
         ];
-        let primary_key = vec![col_1.column_def.clone()];
+        let ProjectionValue::ColumnDef(col_1_col_def) = col_1.proj.source.clone() else {
+            unreachable!()
+        };
+
+        let primary_key = vec![col_1_col_def];
 
         let merged = vec![
             string_column("id".to_string(), vec!["1", "2", "3"]),

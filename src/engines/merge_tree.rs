@@ -2,7 +2,7 @@ use crate::engines::{Engine, EngineConfig};
 use crate::error::{Error, Result};
 use crate::storage::{ColumnDef, Value};
 
-use crate::sql::{OutputColumn, Projection, ProjectionValue};
+use crate::sql::{OutputColumn, Projection};
 use std::cmp::Ordering;
 
 /// Standard engine for most needs.
@@ -47,13 +47,7 @@ impl Engine for MergeTreeEngine {
 
         let mut order_by_indices = Vec::with_capacity(order_by.len());
         for order_proj in order_by {
-            let Some(idx) = columns.iter().position(|col| {
-                if let ProjectionValue::ColumnDef(col_def) = &order_proj.source {
-                    col.column_def == *col_def
-                } else {
-                    false
-                }
-            }) else {
+            let Some(idx) = columns.iter().position(|col| *order_proj == col.proj) else {
                 return Err(Error::InvalidColumnsSpecified);
             };
             order_by_indices.push(idx);
@@ -109,6 +103,7 @@ fn apply_permutation_in_place(data: &mut [Value], indices: &[usize]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sql::ProjectionValue;
     use crate::storage::ValueType;
 
     macro_rules! value {
@@ -157,10 +152,11 @@ mod tests {
     fn test_single_row_single_column() {
         let engine = MergeTreeEngine::new(EngineConfig::default());
         let columns = vec![OutputColumn {
-            alias: None,
-            column_def: str_col_def(),
+            proj: Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(str_col_def()),
+            },
             data: value!(S "1"),
-            is_virtual: true,
         }];
 
         assert_eq!(
@@ -182,10 +178,11 @@ mod tests {
     fn test_multiple_row_single_column() {
         let engine = MergeTreeEngine::new(EngineConfig::default());
         let columns = vec![OutputColumn {
-            alias: None,
-            column_def: int_col_def(),
+            proj: Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(int_col_def()),
+            },
             data: value!(I 1, 2, 4, 3, 2),
-            is_virtual: true,
         }];
 
         assert_eq!(
@@ -200,10 +197,11 @@ mod tests {
                 )
                 .unwrap(),
             vec![OutputColumn {
-                alias: None,
-                column_def: int_col_def(),
+                proj: Projection {
+                    alias: None,
+                    source: ProjectionValue::ColumnDef(int_col_def())
+                },
                 data: value!(I 1, 2, 2, 3, 4),
-                is_virtual: true
             }]
         );
     }
@@ -213,16 +211,18 @@ mod tests {
         let engine = MergeTreeEngine::new(EngineConfig::default());
         let columns = vec![
             OutputColumn {
-                alias: None,
-                column_def: int_col_def(),
+                proj: Projection {
+                    alias: None,
+                    source: ProjectionValue::ColumnDef(int_col_def()),
+                },
                 data: value!(I 1),
-                is_virtual: true,
             },
             OutputColumn {
-                alias: None,
-                column_def: str_col_def(),
+                proj: Projection {
+                    alias: None,
+                    source: ProjectionValue::ColumnDef(str_col_def()),
+                },
                 data: value!(S "1"),
-                is_virtual: true,
             },
         ];
 
@@ -246,16 +246,18 @@ mod tests {
         let engine = MergeTreeEngine::new(EngineConfig::default());
         let columns = vec![
             OutputColumn {
-                alias: None,
-                column_def: int_col_def(),
+                proj: Projection {
+                    alias: None,
+                    source: ProjectionValue::ColumnDef(int_col_def()),
+                },
                 data: value!(I 1, 5, 3, 2, 4),
-                is_virtual: true,
             },
             OutputColumn {
-                alias: None,
-                column_def: str_col_def(),
+                proj: Projection {
+                    alias: None,
+                    source: ProjectionValue::ColumnDef(str_col_def()),
+                },
                 data: value!(S "1", "5", "3", "2", "4"),
-                is_virtual: true,
             },
         ];
 
@@ -272,16 +274,18 @@ mod tests {
                 .unwrap(),
             vec![
                 OutputColumn {
-                    alias: None,
-                    column_def: int_col_def(),
+                    proj: Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(int_col_def())
+                    },
                     data: value!(I 1, 2, 3, 4, 5),
-                    is_virtual: true
                 },
                 OutputColumn {
-                    alias: None,
-                    column_def: str_col_def(),
+                    proj: Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(str_col_def())
+                    },
                     data: value!(S "1", "2", "3", "4", "5"),
-                    is_virtual: true
                 }
             ]
         )
@@ -292,16 +296,18 @@ mod tests {
         let engine = MergeTreeEngine::new(EngineConfig::default());
         let columns = vec![
             OutputColumn {
-                alias: None,
-                column_def: int_col_def(),
+                proj: Projection {
+                    alias: None,
+                    source: ProjectionValue::ColumnDef(int_col_def()),
+                },
                 data: value!(I 1, 2, 3, 2, 4),
-                is_virtual: true,
             },
             OutputColumn {
-                alias: None,
-                column_def: str_col_def(),
+                proj: Projection {
+                    alias: None,
+                    source: ProjectionValue::ColumnDef(str_col_def()),
+                },
                 data: value!(S "1", "5", "3", "2", "4"),
-                is_virtual: true,
             },
         ];
 
@@ -324,16 +330,18 @@ mod tests {
                 .unwrap(),
             vec![
                 OutputColumn {
-                    alias: None,
-                    column_def: int_col_def(),
+                    proj: Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(int_col_def())
+                    },
                     data: value!(I 1, 2, 2, 3, 4),
-                    is_virtual: true
                 },
                 OutputColumn {
-                    alias: None,
-                    column_def: str_col_def(),
+                    proj: Projection {
+                        alias: None,
+                        source: ProjectionValue::ColumnDef(str_col_def())
+                    },
                     data: value!(S "1", "2", "5", "3", "4"),
-                    is_virtual: true
                 }
             ]
         )

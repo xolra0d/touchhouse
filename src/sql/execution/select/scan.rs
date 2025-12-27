@@ -6,7 +6,7 @@ use crate::sql::execution::select::accumulate_function::AccumulateFn;
 use crate::sql::execution::select::{GranuleMask, Strategy};
 use crate::sql::{OutputColumn, Projection, ProjectionValue};
 use crate::storage::value::ArchivedValue;
-use crate::storage::{Column, ColumnDef, Constraints, MarkInfo, TableDef, TablePartInfo, Value};
+use crate::storage::{ColumnDef, MarkInfo, PhysicalColumn, TableDef, TablePartInfo, Value};
 use rayon::prelude::*;
 use rkyv::vec::ArchivedVec;
 
@@ -18,12 +18,13 @@ impl ScanLogic {
         row_parts_masks: Vec<(&TablePartInfo, Vec<GranuleMask>)>,
         projections: Vec<Projection>,
         mut accumulator: Vec<Vec<Value>>,
-        acc_struct: &(impl AccumulateFn + std::marker::Sync),
+        acc_struct: &(impl AccumulateFn + Sync),
         index_granularity: usize,
         strategy: &Strategy,
     ) -> Result<Vec<OutputColumn>> {
         let accepted_row_count = Arc::new(AtomicUsize::new(0));
-        let mut output_columns = Self::convert_proj_to_out_cols(projections);
+        let mut output_columns: Vec<OutputColumn> =
+            projections.into_iter().map(OutputColumn::from).collect();
 
         for (part_info, granules_mask) in row_parts_masks {
             let mapping =
@@ -34,9 +35,10 @@ impl ScanLogic {
                 .column_defs
                 .par_iter()
                 .map(|col_def| {
-                    let mmap =
-                        Column::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
-                    Column::validate_mmap(&mmap, &col_def.name)?;
+                    let mmap = PhysicalColumn::open_as_mmap(
+                        &part_info.get_column_path(table_def, col_def),
+                    )?;
+                    PhysicalColumn::validate_mmap(&mmap, &col_def.name)?;
                     Ok(mmap)
                 })
                 .collect();
@@ -54,13 +56,14 @@ impl ScanLogic {
 
                     let mut row_count = None;
                     for &(out_col_idx, part_col_idx) in &mapping {
+                        let ProjectionValue::ColumnDef(col_def) =                             &output_columns[out_col_idx].proj.source else {
+                            unreachable!("filtered other columns during `Self::create_out_cols_to_disk_cols_mapping`")
+                        };
+
                         let granule_bytes = match TablePartInfo::get_granule_bytes_decompressed(
                             &mmaps[part_col_idx],
                             &part_info.marks[granule_mask.granule_id].info[part_col_idx],
-                            &output_columns[out_col_idx]
-                                .column_def
-                                .constraints
-                                .compression_type,
+                            &col_def.constraints.compression_type
                         ) {
                             Ok(bytes) => bytes,
                             Err(err) => return Some(Err(err)),
@@ -112,49 +115,19 @@ impl ScanLogic {
         let mut result = Vec::new();
 
         for (col_idx, col) in out_cols.iter().enumerate() {
-            if col.is_virtual {
+            let ProjectionValue::ColumnDef(col_def) = &col.proj.source else {
                 continue;
-            }
+            };
 
             if let Some(position) = part_col_defs
                 .iter()
-                .position(|p_col_def| *p_col_def == col.column_def)
+                .position(|p_col_def| p_col_def == col_def)
             {
                 result.push((col_idx, position));
             }
         }
 
         result
-    }
-
-    pub fn convert_proj_to_out_cols(projections: Vec<Projection>) -> Vec<OutputColumn> {
-        let mut output_columns = Vec::with_capacity(projections.len());
-
-        for projection in projections {
-            let Projection { alias, source } = projection;
-            match source {
-                ProjectionValue::Value(value) => {
-                    output_columns.push(OutputColumn {
-                        alias,
-                        column_def: ColumnDef {
-                            name: format!("{value:?}"),
-                            field_type: value.get_type(),
-                            constraints: Constraints::default(),
-                        },
-                        data: Vec::new(),
-                        is_virtual: true,
-                    });
-                }
-                ProjectionValue::ColumnDef(column_def) => output_columns.push(OutputColumn {
-                    alias,
-                    column_def,
-                    data: Vec::new(),
-                    is_virtual: false,
-                }),
-            }
-        }
-
-        output_columns
     }
 
     pub fn get_granule_rows_fallback(
@@ -168,8 +141,8 @@ impl ScanLogic {
         let Some(col_def) = part_info.column_defs.first() else {
             return Err(Error::NoColumnsSpecified);
         };
-        let mmap = Column::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
-        Column::validate_mmap(&mmap, &col_def.name)?;
+        let mmap = PhysicalColumn::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
+        PhysicalColumn::validate_mmap(&mmap, &col_def.name)?;
 
         let granule_bytes = TablePartInfo::get_granule_bytes_decompressed(
             &mmap,

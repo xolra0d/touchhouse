@@ -73,8 +73,8 @@ pub enum Error {
     UnknownFunction(String),
     #[display("Nested functions are not supported: {_0}")]
     UnsupportedNestedFunctions(String),
-    #[display("Named parameters are not supported: {_0}")]
-    UnsupportedNamedParameters(String),
+    #[display("Invalid function paramaters: {_0}")]
+    InvalidFunctionParams(String),
     #[display("Part ({_0}) does not have any columns.")]
     PartDoesNotHaveColumns(String),
 

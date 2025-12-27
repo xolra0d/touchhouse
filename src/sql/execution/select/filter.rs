@@ -3,7 +3,7 @@ use crate::runtime_config::TableConfig;
 use crate::sql::compiled_filter::{BinOp, CompiledFilter};
 use crate::sql::execution::select::{GranuleMask, ScanLogic, Strategy};
 use crate::storage::value::ArchivedValue;
-use crate::storage::{Column, ColumnDef, Mark, MarkInfo, TableDef, TablePartInfo, Value};
+use crate::storage::{ColumnDef, Mark, MarkInfo, PhysicalColumn, TableDef, TablePartInfo, Value};
 
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -77,9 +77,10 @@ impl FilterLogic {
             for (col_idx, col_def) in columns_to_filter.iter().enumerate() {
                 if let Some(part_col_idx) = part_info.column_defs.iter().position(|c| c == *col_def)
                 {
-                    let mmap =
-                        Column::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
-                    Column::validate_mmap(&mmap, &col_def.name)?;
+                    let mmap = PhysicalColumn::open_as_mmap(
+                        &part_info.get_column_path(table_def, col_def),
+                    )?;
+                    PhysicalColumn::validate_mmap(&mmap, &col_def.name)?;
                     mmaps.push(Some(mmap));
                     filter_to_part_col_idx[col_idx] = Some(part_col_idx);
                 } else {
@@ -169,10 +170,11 @@ impl FilterLogic {
 
             for (mark_idx, mark) in part_info.marks.iter().enumerate() {
                 if mark == last_mark {
-                    let mmap =
-                        Column::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
+                    let mmap = PhysicalColumn::open_as_mmap(
+                        &part_info.get_column_path(table_def, col_def),
+                    )?;
 
-                    Column::validate_mmap(&mmap, &col_def.name)?;
+                    PhysicalColumn::validate_mmap(&mmap, &col_def.name)?;
 
                     let granule_bytes = TablePartInfo::get_granule_bytes_decompressed(
                         &mmap,

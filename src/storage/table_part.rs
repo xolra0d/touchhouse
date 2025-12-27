@@ -2,7 +2,7 @@ use crate::engines::EngineConfig;
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
 use crate::storage::compression::{compress_bytes, decompress_bytes};
-use crate::storage::{Column, ColumnDef, CompressionType, TableDef, Value};
+use crate::storage::{ColumnDef, CompressionType, PhysicalColumn, TableDef, Value};
 
 use crate::sql::{OutputColumn, Projection, ProjectionValue};
 use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
@@ -172,7 +172,7 @@ impl TablePartInfo {
 #[derive(Debug, Clone)]
 pub struct TablePart {
     pub info: TablePartInfo,
-    pub data: Vec<Column>,
+    pub data: Vec<PhysicalColumn>,
 }
 
 impl TablePart {
@@ -204,7 +204,7 @@ impl TablePart {
             .settings
             .engine
             .get_engine(EngineConfig::default());
-        let data = engine.order_columns(
+        let ordered_out_cols = engine.order_columns(
             columns,
             &table_config
                 .metadata
@@ -219,26 +219,34 @@ impl TablePart {
             &table_config.metadata.schema.primary_key,
         )?;
 
-        let data = data
+        let ordered_cols: Result<Vec<_>> = ordered_out_cols
             .into_iter()
             .map(OutputColumn::into_column)
-            .collect::<Vec<_>>();
+            .collect();
+
+        let ordered_cols = ordered_cols?;
 
         let marks = generate_indexes(
-            &data,
+            &ordered_cols,
             &table_config.metadata.schema.primary_key,
             table_config.metadata.settings.index_granularity,
         );
-        let row_count = data[0].data.len() as u64;
+        let row_count = ordered_cols[0].data.len() as u64;
 
         let info = TablePartInfo {
             name,
             marks,
             row_count,
-            column_defs: data.iter().map(|col| col.column_def.clone()).collect(),
+            column_defs: ordered_cols
+                .iter()
+                .map(|col| col.column_def.clone())
+                .collect(),
         };
 
-        Ok(Self { info, data })
+        Ok(Self {
+            info,
+            data: ordered_cols,
+        })
     }
 
     /// Saves part data and indexes to raw directory.
@@ -353,11 +361,11 @@ impl TablePart {
 }
 
 fn generate_indexes(
-    columns: &[Column],
+    columns: &[PhysicalColumn],
     order_by: &[ColumnDef],
     index_granularity: u32,
 ) -> Vec<Mark> {
-    let columns_in_order_by: Vec<&Column> = columns
+    let columns_in_order_by: Vec<&PhysicalColumn> = columns
         .iter()
         .filter(|x| order_by.contains(&x.column_def))
         .collect();

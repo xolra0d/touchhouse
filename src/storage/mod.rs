@@ -12,7 +12,7 @@ use crate::storage::table_part::MAGIC_BYTES_COLUMN;
 pub use crate::storage::table_part::{Mark, MarkInfo, TablePart, TablePartInfo};
 pub use crate::storage::value::{Value, ValueType};
 
-use crate::sql::OutputColumn;
+use crate::sql::{OutputColumn, Projection, ProjectionValue};
 use memmap2::{Advice, Mmap};
 use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::Serialize;
@@ -47,18 +47,19 @@ pub struct ColumnDef {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Column {
+pub struct PhysicalColumn {
     pub column_def: ColumnDef,
     pub data: Vec<Value>,
 }
 
-impl Column {
-    pub fn into_output_column_physical(self) -> OutputColumn {
+impl PhysicalColumn {
+    pub fn into_output_column(self) -> OutputColumn {
         OutputColumn {
-            alias: None,
-            column_def: self.column_def,
+            proj: Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(self.column_def),
+            },
             data: self.data,
-            is_virtual: false,
         }
     }
 }
@@ -85,7 +86,7 @@ impl std::io::Write for Crc32Writer {
     }
 }
 
-impl Column {
+impl PhysicalColumn {
     pub fn open_as_mmap(file_path: &Path) -> Result<Mmap> {
         let file = File::open(file_path).map_err(|error| {
             Error::CouldNotReadData(format!(

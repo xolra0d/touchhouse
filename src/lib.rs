@@ -25,7 +25,7 @@ use crate::tcp_io_parser::Parser;
 pub fn reject_32bit_systems() -> Result<(), String> {
     if size_of::<usize>() == size_of::<u32>() {
         Err(format!(
-            "32bit systems are not supported, as they are not optimal for OLAP workload which could require gigabytes of ram and where the number of rows could exceed {}",
+            "32bit systems are not supported, as they are not optimal for OLAP workloads (where the number of rows could exceed easily exceed {}).",
             u32::MAX
         ))
     } else {
@@ -107,10 +107,13 @@ async fn handle_connection(socket: &mut TcpStream) -> Result<(), Error> {
 
         let output = tokio::task::spawn_blocking(move || {
             let start = std::time::Instant::now();
-            let result = CommandRunner::execute_command(&value);
+            let output_table = CommandRunner::execute_command(&value);
             let elapsed = start.elapsed();
 
-            result.map(|output_table| output_table.with_execution_time(elapsed))
+            output_table.map(|mut x| {
+                x.execution_time = elapsed;
+                x
+            })
         })
         .await
         .unwrap_or_else(|error| {

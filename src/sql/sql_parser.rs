@@ -1,4 +1,5 @@
-use sqlparser::ast::{BinaryOperator, Expr, Statement};
+use serde::Serialize;
+use sqlparser::ast::{BinaryOperator, Expr, Function as SQLFunction, Statement};
 use sqlparser::dialect::ClickHouseDialect;
 use sqlparser::parser::Parser;
 
@@ -14,16 +15,31 @@ pub enum ScanSource {
     Subquery(Box<LogicalPlan>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum ProjectionValue {
     Value(Value),
     ColumnDef(ColumnDef),
+    Function(Function),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Projection {
     pub alias: Option<String>,
     pub source: ProjectionValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum Function {
+    Min(Box<Projection>),
+    Max(Box<Projection>),
+    Sum(Box<Projection>),
+    Avg(Box<Projection>),
+}
+
+impl Function {
+    pub fn try_parse(_function: &SQLFunction) -> Result<Self> {
+        todo!()
+    }
 }
 
 /// High level representation of the SQL query.

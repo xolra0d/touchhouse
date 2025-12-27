@@ -1,7 +1,7 @@
 use crate::config::CONFIG;
 use crate::error::{Error, Result};
 use crate::runtime_config::{DATABASE_LOAD, TABLE_DATA};
-use crate::storage::{Column, TableDef, TablePart, TablePartInfo, Value};
+use crate::storage::{PhysicalColumn, TableDef, TablePart, TablePartInfo, Value};
 
 use log::{error, info, warn};
 use uuid::Uuid;
@@ -42,7 +42,7 @@ impl BackgroundMerge {
                 &merge_data.table_def,
                 merged
                     .into_iter()
-                    .map(Column::into_output_column_physical)
+                    .map(PhysicalColumn::into_output_column)
                     .collect(),
                 Some(merge_data.part_1.name.clone()), // use latest name of two for proper future merging
             ) {
@@ -70,7 +70,7 @@ impl BackgroundMerge {
     /// Returns:
     ///   * Ok: `Vec<Column>` with all part data.
     ///   * Error: `CouldNotReadData` on I/O or deserialization failure.
-    fn load_part(table_def: &TableDef, part: &TablePartInfo) -> Result<Vec<Column>> {
+    fn load_part(table_def: &TableDef, part: &TablePartInfo) -> Result<Vec<PhysicalColumn>> {
         let mut columns = Vec::new();
 
         // column-stored version
@@ -82,7 +82,7 @@ impl BackgroundMerge {
         }
 
         for (col_idx, column_def) in part.column_defs.iter().enumerate() {
-            let mmap = Column::open_as_mmap(&part.get_column_path(table_def, column_def))?;
+            let mmap = PhysicalColumn::open_as_mmap(&part.get_column_path(table_def, column_def))?;
 
             let mut data = Vec::new();
             for mark_info in &marks[col_idx] {
@@ -99,7 +99,7 @@ impl BackgroundMerge {
                 })?;
                 data.extend(granule_data);
             }
-            let column = Column {
+            let column = PhysicalColumn {
                 column_def: column_def.clone(),
                 data,
             };
@@ -112,7 +112,10 @@ impl BackgroundMerge {
     ///
     /// Extends `part_0` with data from `part_1`. If a column exists in `part_1` but not `part_0`,
     /// fills missing rows with default values.
-    fn merge_parts(mut part_0: Vec<Column>, part_1: Vec<Column>) -> Vec<Column> {
+    fn merge_parts(
+        mut part_0: Vec<PhysicalColumn>,
+        part_1: Vec<PhysicalColumn>,
+    ) -> Vec<PhysicalColumn> {
         for column_1 in part_1 {
             if let Some(position) = part_0
                 .iter()
@@ -128,7 +131,7 @@ impl BackgroundMerge {
                     .unwrap_or_default();
                 let mut data = vec![default_value; part_0[0].data.len()];
                 data.extend(column_1.data.into_iter());
-                part_0.push(Column {
+                part_0.push(PhysicalColumn {
                     column_def: column_1.column_def.clone(),
                     data,
                 });
@@ -141,7 +144,9 @@ impl BackgroundMerge {
     /// Loads both parts to be merged into memory.
     ///
     /// Returns: `Some((part_0_cols, part_1_cols))` on success, `None` on failure.
-    fn load_both_parts(merge_data: &MergeData) -> Option<(Vec<Column>, Vec<Column>)> {
+    fn load_both_parts(
+        merge_data: &MergeData,
+    ) -> Option<(Vec<PhysicalColumn>, Vec<PhysicalColumn>)> {
         let part_0_cols = Self::load_part(&merge_data.table_def, &merge_data.part_0)
             .map_err(|error| {
                 error!(

@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
 use crate::sql::output_table::OutputColumn;
 use crate::sql::sql_parser::LogicalPlan;
+use crate::sql::{Projection, ProjectionValue};
 use crate::storage::{TableDef, Value};
 
 impl LogicalPlan {
@@ -91,11 +92,12 @@ impl LogicalPlan {
 
         let mut columns: Vec<OutputColumn> = insert_columns
             .into_iter()
-            .map(|x| OutputColumn {
-                alias: None,
-                column_def: x,
+            .map(|col_def| OutputColumn {
+                proj: Projection {
+                    source: ProjectionValue::ColumnDef(col_def),
+                    alias: None,
+                },
                 data: Vec::new(),
-                is_virtual: false,
             })
             .collect();
 
@@ -156,13 +158,18 @@ impl LogicalPlan {
                     }
                 };
 
-                let column_type = &columns[col_idx].column_def.field_type;
-                let value = Value::try_from((sql_value, column_type))?;
+                let ProjectionValue::ColumnDef(column_def) = &columns[col_idx].proj.source else {
+                    return Err(Error::InvalidSource(format!(
+                        "Expected projection to be column definition, got ({:?})",
+                        &columns[col_idx].proj.source
+                    )));
+                };
+                let value = Value::try_from((sql_value, &column_def.field_type))?;
 
-                if value == Value::Null && !columns[col_idx].column_def.constraints.nullable {
+                if value == Value::Null && !column_def.constraints.nullable {
                     return Err(Error::CouldNotInsertData(format!(
                         "NULL value not allowed for column '{}'",
-                        columns[col_idx].column_def.name
+                        column_def.name
                     )));
                 }
 
@@ -184,10 +191,11 @@ impl LogicalPlan {
                 }
             };
             columns.push(OutputColumn {
-                alias: None,
-                column_def: column_def.clone(),
+                proj: Projection {
+                    alias: None,
+                    source: ProjectionValue::ColumnDef(column_def.clone()),
+                },
                 data: vec![default_value_ref.clone(); source.rows.len()],
-                is_virtual: false,
             });
         }
 

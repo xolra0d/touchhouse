@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
-use crate::sql::sql_parser::{LogicalPlan, Projection, ProjectionValue, ScanSource};
+use crate::sql::sql_parser::{Function, LogicalPlan, Projection, ProjectionValue, ScanSource};
 use crate::storage::TableDef;
 use crate::storage::Value;
 
@@ -113,6 +113,10 @@ impl LogicalPlan {
                                 alias: None,
                             }
                         }
+                        Expr::Function(function) => Projection {
+                            source: ProjectionValue::Function(Function::try_parse(function)?),
+                            alias: None,
+                        },
                         _ => {
                             return Err(Error::UnsupportedCommand(
                                 "Only column identifiers and values are supported in projections"
@@ -150,6 +154,10 @@ impl LogicalPlan {
                                 alias: Some(alias.value.clone()),
                             }
                         }
+                        Expr::Function(function) => Projection {
+                            source: ProjectionValue::Function(Function::try_parse(function)?),
+                            alias: Some(alias.value.clone()),
+                        },
                         _ => {
                             return Err(Error::UnsupportedCommand(
                                 "Only column identifiers are supported in projections".to_string(),
