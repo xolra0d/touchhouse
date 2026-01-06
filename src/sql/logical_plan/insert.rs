@@ -107,7 +107,7 @@ impl LogicalPlan {
             ));
         };
         let SetExpr::Values(source) = source.body.as_ref() else {
-            return Err(Error::InvalidSource("Provide direct values".to_string())); // todo: allow source to be from select
+            return Err(Error::InvalidSource("Provide direct values".to_string()));
         };
 
         let Some(val_count) = source.rows.first().map(Vec::len) else {

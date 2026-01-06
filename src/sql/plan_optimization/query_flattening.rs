@@ -153,8 +153,6 @@ impl LogicalPlan {
     fn merge_order_by(self, mut order_by: Vec<Vec<Projection>>) -> Self {
         match self {
             Self::OrderBy { column_defs, plan } => {
-                // todo: remove unnecessary repeating order_by
-                // todo: simplify
                 for (idx, own_order_by) in column_defs.into_iter().enumerate() {
                     order_by.insert(idx, own_order_by);
                 }

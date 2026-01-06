@@ -166,7 +166,7 @@ impl Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
-            (Value::Null, Value::Null) => Some(Ordering::Equal), // todo: maybe replace with not eq..
+            (Value::Null, Value::Null) => Some(Ordering::Equal),
             (Value::String(l), Value::String(r)) => Some(l.cmp(r)),
             (Value::Bool(l), Value::Bool(r)) => Some(l.cmp(r)),
             (Value::Uuid(l), Value::Uuid(r)) => Some(l.cmp(r)),
@@ -246,7 +246,7 @@ impl PartialEq<ArchivedValue> for ArchivedValue {
 impl PartialOrd<ArchivedValue> for ArchivedValue {
     fn partial_cmp(&self, rhs: &ArchivedValue) -> Option<Ordering> {
         match (self, rhs) {
-            (ArchivedValue::Null, ArchivedValue::Null) => Some(Ordering::Equal), // todo: maybe replace with not eq..
+            (ArchivedValue::Null, ArchivedValue::Null) => Some(Ordering::Equal),
             (Self::String(l), ArchivedValue::String(r)) => l.partial_cmp(r),
             (Self::Uuid(l), ArchivedValue::Uuid(r)) => l.partial_cmp(r),
             (Self::Bool(l), ArchivedValue::Bool(r)) => l.partial_cmp(r),

@@ -3,89 +3,92 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::error::{Error, Result};
 use crate::sql::execution::select::accumulate_function::AccumulateFn;
-use crate::sql::execution::select::{GranuleMask, Strategy};
-use crate::sql::{OutputColumn, Projection, ProjectionValue};
+use crate::sql::execution::select::{
+    Granule, Strategy, create_proj_to_part_cols_mapping, get_granule_rows_fallback,
+};
+use crate::sql::{OutputColumn, Projection};
 use crate::storage::value::ArchivedValue;
-use crate::storage::{ColumnDef, MarkInfo, PhysicalColumn, TableDef, TablePartInfo, Value};
+use crate::storage::{PhysicalColumn, TableDef, TablePartInfo, Value};
 use rayon::prelude::*;
 use rkyv::vec::ArchivedVec;
 
 pub struct ScanLogic;
 
 impl ScanLogic {
-    pub fn get_archived_values(
+    pub fn get_out_cols(
         table_def: &TableDef,
-        row_parts_masks: Vec<(&TablePartInfo, Vec<GranuleMask>)>,
+        parts_granules: Vec<(&TablePartInfo, Vec<Granule>)>,
         projections: Vec<Projection>,
         mut accumulator: Vec<Vec<Value>>,
-        acc_struct: &(impl AccumulateFn + Sync),
+        accumulate: &(impl AccumulateFn + Sync),
         index_granularity: usize,
         strategy: &Strategy,
     ) -> Result<Vec<OutputColumn>> {
         let accepted_row_count = Arc::new(AtomicUsize::new(0));
-        let mut output_columns: Vec<OutputColumn> =
-            projections.into_iter().map(OutputColumn::from).collect();
+        let mut output_columns: Vec<OutputColumn> = projections
+            .iter()
+            .cloned()
+            .map(OutputColumn::from)
+            .collect();
 
-        for (part_info, granules_mask) in row_parts_masks {
-            let mapping =
-                Self::create_out_cols_to_disk_cols_mapping(&output_columns, &part_info.column_defs);
-
-            // todo: open only required..
-            let mmaps: Result<Vec<_>> = part_info
-                .column_defs
+        for (part_info, granules) in parts_granules {
+            let mapping = create_proj_to_part_cols_mapping(&projections, &part_info.column_defs);
+            let mmaps: Result<Vec<_>> = mapping
                 .par_iter()
-                .map(|col_def| {
-                    let mmap = PhysicalColumn::open_as_mmap(
-                        &part_info.get_column_path(table_def, col_def),
-                    )?;
-                    PhysicalColumn::validate_mmap(&mmap, &col_def.name)?;
-                    Ok(mmap)
+                .map(|m| {
+                    if let Some(col_idx) = m {
+                        let mmap = PhysicalColumn::open_as_mmap(
+                            &part_info.get_column_path(table_def, &part_info.column_defs[*col_idx]),
+                        )?;
+                        Ok(Some(mmap))
+                    } else {
+                        Ok(None)
+                    }
                 })
                 .collect();
+            let mmaps = Arc::new(mmaps?);
 
-            let mmaps = mmaps?;
-
-            accumulator = granules_mask
+            accumulator = granules
                 .into_par_iter()
-                .filter_map(|granule_mask| {
+                .filter_map(|granule| {
                     if accepted_row_count.load(Ordering::Relaxed) >= strategy.lines_to_read {
                         return None;
                     }
                     let mut refs: Vec<Option<(Vec<u8>, &[bool])>> =
                         vec![None; output_columns.len()];
 
-                    let mut row_count = None;
-                    for &(out_col_idx, part_col_idx) in &mapping {
-                        let ProjectionValue::ColumnDef(col_def) =                             &output_columns[out_col_idx].proj.source else {
-                            unreachable!("filtered other columns during `Self::create_out_cols_to_disk_cols_mapping`")
-                        };
+                    let mut granule_len = None;
 
-                        let granule_bytes = match TablePartInfo::get_granule_bytes_decompressed(
-                            &mmaps[part_col_idx],
-                            &part_info.marks[granule_mask.granule_id].info[part_col_idx],
-                            &col_def.constraints.compression_type
-                        ) {
-                            Ok(bytes) => bytes,
-                            Err(err) => return Some(Err(err)),
-                        };
-                        if row_count.is_none() {
-                            let archived: &ArchivedVec<ArchivedValue> =
-                                unsafe { rkyv::access_unchecked(&granule_bytes) };
-                            row_count = Some(archived.len());
+                    for (proj_idx, mmap) in mmaps.iter().enumerate() {
+                        if let Some(mmap) = &mmap
+                            && let Some(col_def_idx_in_part) = mapping[proj_idx]
+                        {
+                            let granule_bytes = match TablePartInfo::get_granule_bytes_decompressed(
+                                mmap,
+                                &part_info.marks[granule.granule_idx].info[col_def_idx_in_part],
+                                &part_info.column_defs[col_def_idx_in_part]
+                                    .constraints
+                                    .compression_type,
+                            ) {
+                                Ok(bytes) => bytes,
+                                Err(err) => return Some(Err(err)),
+                            };
+
+                            if granule_len.is_none() {
+                                let archived: &ArchivedVec<ArchivedValue> =
+                                    unsafe { rkyv::access_unchecked(&granule_bytes) };
+                                granule_len = Some(archived.len());
+                            }
+                            refs[proj_idx] = Some((granule_bytes, &granule.mask));
                         }
-                        refs[out_col_idx] = Some((granule_bytes, &granule_mask.mask));
                     }
 
-                    let row_count = row_count.unwrap_or({
+                    let row_count = granule_len.unwrap_or({
                         let Some(last_mark) = part_info.marks.last() else {
                             return Some(Err(Error::NoColumnsSpecified));
                         };
-                        if part_info.marks[granule_mask.granule_id] == *last_mark {
-                            match Self::get_granule_rows_fallback(
-                                table_def,
-                                part_info,
-                                &last_mark.info,
-                            ) {
+                        if part_info.marks[granule.granule_idx] == *last_mark {
+                            match get_granule_rows_fallback(table_def, part_info, &last_mark.info) {
                                 Ok(rows) => rows,
                                 Err(err) => return Some(Err(err)),
                             }
@@ -95,9 +98,9 @@ impl ScanLogic {
                     });
                     accepted_row_count.fetch_add(row_count, Ordering::Relaxed);
 
-                    Some(acc_struct.accumulate_raw(accumulator.clone(), &refs, row_count))
+                    Some(accumulate.accumulate_raw(accumulator.clone(), &refs, row_count))
                 })
-                .try_reduce_with(|a, b| acc_struct.accumulate_values(a, b))
+                .try_reduce_with(|a, b| accumulate.accumulate_values(a, b))
                 .ok_or(Error::EmptySource)??;
         }
         // apply accumulated values
@@ -106,52 +109,5 @@ impl ScanLogic {
         }
 
         Ok(output_columns)
-    }
-
-    pub fn create_out_cols_to_disk_cols_mapping(
-        out_cols: &[OutputColumn],
-        part_col_defs: &[ColumnDef],
-    ) -> Vec<(usize, usize)> {
-        let mut result = Vec::new();
-
-        for (col_idx, col) in out_cols.iter().enumerate() {
-            let ProjectionValue::ColumnDef(col_def) = &col.proj.source else {
-                continue;
-            };
-
-            if let Some(position) = part_col_defs
-                .iter()
-                .position(|p_col_def| p_col_def == col_def)
-            {
-                result.push((col_idx, position));
-            }
-        }
-
-        result
-    }
-
-    pub fn get_granule_rows_fallback(
-        table_def: &TableDef,
-        part_info: &TablePartInfo,
-        mark_info: &[MarkInfo],
-    ) -> Result<usize> {
-        let Some(first_mark_info) = mark_info.first() else {
-            return Err(Error::NoColumnsSpecified);
-        };
-        let Some(col_def) = part_info.column_defs.first() else {
-            return Err(Error::NoColumnsSpecified);
-        };
-        let mmap = PhysicalColumn::open_as_mmap(&part_info.get_column_path(table_def, col_def))?;
-        PhysicalColumn::validate_mmap(&mmap, &col_def.name)?;
-
-        let granule_bytes = TablePartInfo::get_granule_bytes_decompressed(
-            &mmap,
-            first_mark_info,
-            &col_def.constraints.compression_type,
-        )?;
-        let archived: &ArchivedVec<ArchivedValue> =
-            unsafe { rkyv::access_unchecked(&granule_bytes) };
-
-        Ok(archived.len())
     }
 }

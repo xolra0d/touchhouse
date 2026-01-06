@@ -247,9 +247,9 @@ pub fn load_existing_parts() -> Result<(), String> {
                 match TablePartInfo::read_from(&table_def, &part_name) {
                     Ok(info) => {
                         let Some(mut result) = TABLE_DATA.get_mut(&table_def) else {
-                            panic!(
-                                "Table definition is removed from TABLE_DATA while loading all parts.."
-                            )
+                            return Err(
+                                "Table definition is removed from TABLE_DATA while loading all parts..".to_string()
+                            );
                         };
                         result.infos.push(info);
                         info!("Loaded part ({part_name}) for table ({table_def})");

@@ -1,12 +1,10 @@
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
-use crate::sql::sql_parser::{Function, LogicalPlan, Projection, ProjectionValue, ScanSource};
+use crate::sql::sql_parser::{LogicalPlan, Projection, ProjectionValue, ScanSource};
 use crate::storage::TableDef;
-use crate::storage::Value;
 
 use sqlparser::ast::{
-    Expr, Ident, LimitClause, OrderByKind, Query, SelectItem, SetExpr, TableFactor,
-    Value as SQLValue,
+    Expr, LimitClause, OrderByKind, Query, SelectItem, SetExpr, TableFactor, Value as SQLValue,
 };
 
 impl LogicalPlan {
@@ -74,7 +72,7 @@ impl LogicalPlan {
 
         let mut read_columns: Vec<Projection> = Vec::with_capacity(select.projection.len());
 
-        let available_columns = Self::extract_columns_from_plan(&plan)?;
+        let available_projections = Self::extract_columns_from_plan(&plan)?;
 
         // Allow either
         // * Wildcard only, meaning all columns.
@@ -98,32 +96,7 @@ impl LogicalPlan {
                         ));
                     }
 
-                    let projection = match expr {
-                        Expr::Identifier(ident) => {
-                            let projection = parse_proj_ident(ident, &available_columns, None)?;
-                            if read_columns.contains(&projection) {
-                                return Err(Error::DuplicateColumn(ident.value.clone())); // todo: remove
-                            }
-                            projection
-                        }
-                        Expr::Value(value) => {
-                            let value = Value::try_from_untyped(value.value.clone())?;
-                            Projection {
-                                source: ProjectionValue::Value(value),
-                                alias: None,
-                            }
-                        }
-                        Expr::Function(function) => Projection {
-                            source: ProjectionValue::Function(Function::try_parse(function)?),
-                            alias: None,
-                        },
-                        _ => {
-                            return Err(Error::UnsupportedCommand(
-                                "Only column identifiers and values are supported in projections"
-                                    .to_string(),
-                            ));
-                        }
-                    };
+                    let projection = Projection::try_from_expr(expr, &available_projections)?;
 
                     read_columns.push(projection);
                 }
@@ -134,36 +107,8 @@ impl LogicalPlan {
                         ));
                     }
 
-                    let projection = match expr {
-                        Expr::Identifier(ident) => {
-                            let projection = parse_proj_ident(
-                                ident,
-                                &available_columns,
-                                Some(alias.value.clone()),
-                            )?;
-                            if read_columns.contains(&projection) {
-                                return Err(Error::DuplicateColumn(ident.value.clone()));
-                            }
-
-                            projection
-                        }
-                        Expr::Value(value) => {
-                            let value = Value::try_from_untyped(value.value.clone())?;
-                            Projection {
-                                source: ProjectionValue::Value(value),
-                                alias: Some(alias.value.clone()),
-                            }
-                        }
-                        Expr::Function(function) => Projection {
-                            source: ProjectionValue::Function(Function::try_parse(function)?),
-                            alias: Some(alias.value.clone()),
-                        },
-                        _ => {
-                            return Err(Error::UnsupportedCommand(
-                                "Only column identifiers are supported in projections".to_string(),
-                            ));
-                        }
-                    };
+                    let mut projection = Projection::try_from_expr(expr, &available_projections)?;
+                    projection.alias = Some(alias.value.clone());
 
                     read_columns.push(projection);
                 }
@@ -177,9 +122,9 @@ impl LogicalPlan {
 
         if let Some(idx) = wildcard {
             if idx == 0 {
-                read_columns.clone_from(&available_columns);
+                read_columns.clone_from(&available_projections);
             } else {
-                for proj in &available_columns {
+                for proj in &available_projections {
                     if !read_columns.contains(proj) {
                         read_columns.push(proj.clone());
                     }
@@ -203,7 +148,7 @@ impl LogicalPlan {
             match &order_by.kind {
                 OrderByKind::All(_params) => {
                     plan = LogicalPlan::OrderBy {
-                        column_defs: vec![read_columns], // todo save as Cow<> of projection maybe, or even indexes?
+                        column_defs: vec![read_columns],
                         plan: Box::new(plan),
                     };
                 }
@@ -211,7 +156,7 @@ impl LogicalPlan {
                     let mut order_by_all = Vec::with_capacity(order_by_given.len());
                     for order_by_expr in order_by_given {
                         let order_by_cols =
-                            Self::parse_order_by(&order_by_expr.expr, &available_columns)?; // OrderBy cols is interpreted in the same way as PK in `CREATE TABLE`
+                            Self::parse_order_by(&order_by_expr.expr, &available_projections)?; // OrderBy cols is interpreted in the same way as PK in `CREATE TABLE`
                         order_by_all.push(order_by_cols);
                     }
 
@@ -339,68 +284,33 @@ impl LogicalPlan {
     //     3. If column name is not an identifier: `InvalidOrderBy`.
     //     4. If column, not found in all columns, is found in ORDER BY: `InvalidOrderBy`.
     //     5. If the same column is added: `InvalidOrderBy`.
-    pub fn parse_order_by(
-        primary_key: &Expr,
-        projections: &[Projection],
-    ) -> Result<Vec<Projection>> {
-        match primary_key {
-            Expr::Identifier(primary_key) => {
-                parse_proj_ident(primary_key, projections, None).map(|x| vec![x])
+    pub fn parse_order_by(order_by: &Expr, projections: &[Projection]) -> Result<Vec<Projection>> {
+        match order_by {
+            Expr::Identifier(order_by) => {
+                Projection::try_from_ident(order_by, projections).map(|x| vec![x])
             }
-            Expr::Tuple(primary_keys) => {
-                let mut primary_key = Vec::with_capacity(primary_keys.len());
-                for key in primary_keys {
+            Expr::Tuple(order_by) => {
+                let mut order_by_total = Vec::with_capacity(order_by.len());
+                for key in order_by {
                     let Expr::Identifier(ident) = key else {
-                        return Err(Error::InvalidPrimaryKey(format!(
-                            "Invalid specifier: {key}"
-                        )));
+                        return Err(Error::InvalidOrderBy(format!("Invalid specifier: {key}")));
                     };
-                    primary_key.push(parse_proj_ident(ident, projections, None)?);
+                    order_by_total.push(Projection::try_from_ident(ident, projections)?);
                 }
 
-                Ok(primary_key)
+                Ok(order_by_total)
             }
-            Expr::Nested(primary_key) => {
+            Expr::Nested(order_by) => {
                 // Added, because `sqlparser-rs` believes single element tuples are `Expr::Nested`
-                if let Expr::Identifier(primary_key) = primary_key.as_ref() {
-                    parse_proj_ident(primary_key, projections, None).map(|x| vec![x])
+                if let Expr::Identifier(order_by) = order_by.as_ref() {
+                    Projection::try_from_ident(order_by, projections).map(|x| vec![x])
                 } else {
-                    Err(Error::InvalidPrimaryKey(
+                    Err(Error::InvalidOrderBy(
                         "Nested primary keys are unsupported".to_string(),
                     ))
                 }
             }
-            _ => Err(Error::InvalidPrimaryKey(format!(
-                "Invalid primary key: {primary_key}"
-            ))),
+            _ => Err(Error::InvalidOrderBy(order_by.to_string())),
         }
     }
-}
-
-fn parse_proj_ident(
-    ident: &Ident,
-    projections: &[Projection],
-    alias: Option<String>,
-) -> Result<Projection> {
-    let Some(mut projection) = projections
-        .iter()
-        .find(|proj| {
-            if let Some(alias) = &proj.alias {
-                *alias == ident.value
-            } else if let ProjectionValue::ColumnDef(column_def) = &proj.source {
-                column_def.name == ident.value
-            } else {
-                false
-            }
-        })
-        .cloned()
-    else {
-        return Err(Error::ColumnNotFound(ident.to_string()));
-    };
-
-    if let Some(alias) = alias {
-        projection.alias = Some(alias);
-    }
-
-    Ok(projection)
 }

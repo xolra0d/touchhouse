@@ -104,7 +104,6 @@ impl PhysicalColumn {
             })?
         };
 
-        // todo: consider advice as optional
         mmap.advise(Advice::Sequential).map_err(|error| {
             Error::CouldNotReadData(format!(
                 "Could not advice mmap for column file ({}): {error}",

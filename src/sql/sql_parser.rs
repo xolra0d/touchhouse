@@ -1,5 +1,8 @@
 use serde::Serialize;
-use sqlparser::ast::{BinaryOperator, Expr, Function as SQLFunction, Statement};
+use sqlparser::ast::{
+    BinaryOperator, Expr, Function as SQLFunction, FunctionArg, FunctionArgExpr, FunctionArguments,
+    Ident, ObjectNamePart, Statement,
+};
 use sqlparser::dialect::ClickHouseDialect;
 use sqlparser::parser::Parser;
 
@@ -22,10 +25,73 @@ pub enum ProjectionValue {
     Function(Function),
 }
 
+impl ProjectionValue {
+    pub fn get_col_def(&self) -> Option<&ColumnDef> {
+        match self {
+            ProjectionValue::ColumnDef(col_def) => Some(col_def),
+            ProjectionValue::Function(function) => match function {
+                Function::Avg(projection)
+                | Function::Max(projection)
+                | Function::Min(projection)
+                | Function::Sum(projection) => projection.source.get_col_def(),
+            },
+            ProjectionValue::Value(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Projection {
     pub alias: Option<String>,
     pub source: ProjectionValue,
+}
+
+impl Projection {
+    pub fn try_from_ident(ident: &Ident, available_projections: &[Projection]) -> Result<Self> {
+        let Some(projection) = available_projections
+            .iter()
+            .find(|proj| {
+                if let Some(alias) = &proj.alias {
+                    *alias == ident.value
+                } else if let ProjectionValue::ColumnDef(column_def) = &proj.source {
+                    column_def.name == ident.value
+                } else {
+                    false
+                }
+            })
+            .cloned()
+        else {
+            return Err(Error::ColumnNotFound(ident.to_string()));
+        };
+
+        Ok(projection)
+    }
+
+    pub fn try_from_expr(expr: &Expr, available_projections: &[Self]) -> Result<Self> {
+        match expr {
+            Expr::Identifier(ident) => {
+                let projection = Self::try_from_ident(ident, available_projections)?;
+                Ok(projection)
+            }
+            Expr::Value(value) => {
+                let value = Value::try_from_untyped(value.value.clone())?;
+                Ok(Self {
+                    source: ProjectionValue::Value(value),
+                    alias: None,
+                })
+            }
+            Expr::Function(function) => Ok(Self {
+                source: ProjectionValue::Function(Function::try_parse(
+                    function,
+                    available_projections,
+                )?),
+                alias: None,
+            }),
+            _ => Err(Error::UnsupportedCommand(
+                "Only column identifiers and values are supported in projections".to_string(),
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -37,8 +103,127 @@ pub enum Function {
 }
 
 impl Function {
-    pub fn try_parse(_function: &SQLFunction) -> Result<Self> {
-        todo!()
+    fn find_function(function_name: &str, mut args: Vec<Projection>) -> Result<Self> {
+        let function_name = function_name.to_lowercase();
+
+        match function_name.as_str() {
+            "min" => {
+                if args.len() != 1 {
+                    return Err(Error::InvalidFunctionParams(format!(
+                        "for `min` function expected only 1 argument, but received: {}",
+                        args.len()
+                    )));
+                }
+
+                Ok(Function::Min(Box::new(args.remove(0))))
+            }
+            "max" => {
+                if args.len() != 1 {
+                    return Err(Error::InvalidFunctionParams(format!(
+                        "for `max` function expected only 1 argument, but received: {}",
+                        args.len()
+                    )));
+                }
+
+                Ok(Function::Max(Box::new(args.remove(0))))
+            }
+            "sum" => {
+                if args.len() != 1 {
+                    return Err(Error::InvalidFunctionParams(format!(
+                        "for `sum` function expected only 1 argument, but received: {}",
+                        args.len()
+                    )));
+                }
+
+                Ok(Function::Sum(Box::new(args.remove(0))))
+            }
+            "avg" => {
+                if args.len() != 1 {
+                    return Err(Error::InvalidFunctionParams(format!(
+                        "for `avg` function expected only 1 argument, but received: {}",
+                        args.len()
+                    )));
+                }
+
+                Ok(Function::Avg(Box::new(args.remove(0))))
+            }
+            _ => Err(Error::UnknownFunction(format!(
+                "Unknown function name: {function_name}"
+            ))),
+        }
+    }
+
+    pub fn try_parse(function: &SQLFunction, available_projections: &[Projection]) -> Result<Self> {
+        if function.name.0.len() != 1 {
+            return Err(Error::UnknownFunction(function.name.to_string()));
+        }
+        let ObjectNamePart::Identifier(function_ident) = &function.name.0[0] else {
+            return Err(Error::UnknownFunction(format!(
+                "function name ({}) should be identifier, not another function.",
+                function.name.0[0]
+            )));
+        };
+        let function_name = &function_ident.value;
+
+        if function.parameters != FunctionArguments::None {
+            return Err(Error::InvalidFunctionParams(format!(
+                "Function parameters ({}) are not allowed.",
+                function.parameters
+            )));
+        }
+
+        let args = match &function.args {
+            FunctionArguments::None => Vec::new(),
+            FunctionArguments::Subquery(subquery) => {
+                return Err(Error::InvalidFunctionParams(format!(
+                    "subqueries ({subquery}) are not supported as function parameters"
+                )));
+            }
+            FunctionArguments::List(args_list) => {
+                if !args_list.clauses.is_empty() {
+                    return Err(Error::InvalidFunctionParams(format!(
+                        "clauses ({:?}) are not supported as function params",
+                        args_list.clauses
+                    )));
+                }
+                if args_list.duplicate_treatment.is_some() {
+                    return Err(Error::InvalidFunctionParams(format!(
+                        "`[ ALL | DISTINCT ]` ({:?}) is not supported as function params",
+                        args_list.duplicate_treatment
+                    )));
+                }
+                let mut arguments = Vec::with_capacity(args_list.args.len());
+                for arg in &args_list.args {
+                    let argument = match arg {
+                        FunctionArg::Unnamed(arg_expr) => match arg_expr {
+                            FunctionArgExpr::Expr(expr) => {
+                                Projection::try_from_expr(expr, available_projections)?
+                            }
+                            FunctionArgExpr::Wildcard => available_projections[0].clone(),
+                            FunctionArgExpr::QualifiedWildcard(qualified_wildcard) => {
+                                return Err(Error::InvalidFunctionParams(format!(
+                                    "Currently, qualified wildcards ({qualified_wildcard}) are not supported"
+                                )));
+                            }
+                        },
+                        FunctionArg::Named { .. } => {
+                            return Err(Error::InvalidFunctionParams(
+                                "Currently functions do not have/support named parameters."
+                                    .to_string(),
+                            ));
+                        }
+                        FunctionArg::ExprNamed { .. } => unreachable!(
+                            "ClickHouseDialect::supports_named_fn_args_with_expr_name is false"
+                        ),
+                    };
+                    arguments.push(argument);
+                }
+
+                arguments
+            }
+        };
+
+        Self::find_function(function_name, args)
     }
 }
 
@@ -138,7 +323,7 @@ impl TryFrom<&str> for LogicalPlan {
                 if_exists,
                 names,
                 ..
-            } => Self::from_drop(object_type, *if_exists, names),
+            } => Self::from_drop(*object_type, *if_exists, names),
 
             statement => Err(Error::UnsupportedCommand(statement.to_string())),
         }

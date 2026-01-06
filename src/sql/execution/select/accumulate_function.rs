@@ -20,25 +20,25 @@ pub trait AccumulateFn {
     ) -> Result<Vec<Vec<Value>>>;
 }
 
-pub struct SumFn;
+pub struct CollectFn;
 
-impl AccumulateFn for SumFn {
+impl AccumulateFn for CollectFn {
     fn new() -> Self {
-        SumFn
+        CollectFn
     }
 
     fn accumulate_raw(
         &self,
         mut acc: Vec<Vec<Value>>,
-        values: &[Option<(Vec<u8>, &[bool])>],
+        read_columns: &[Option<(Vec<u8>, &[bool])>],
         row_count: usize,
     ) -> Result<Vec<Vec<Value>>> {
-        for (col_idx, col_values) in values.iter().enumerate() {
-            if let Some(col_values) = col_values {
-                let archived_values: &ArchivedVec<ArchivedValue> =
-                    unsafe { rkyv::access_unchecked(&col_values.0) };
-                for (value_idx, archived_value) in archived_values.iter().enumerate() {
-                    if col_values.1[value_idx] {
+        for (col_idx, col_data) in read_columns.iter().enumerate() {
+            if let Some((col_values, bitmask)) = col_data {
+                let archived_col_values: &ArchivedVec<ArchivedValue> =
+                    unsafe { rkyv::access_unchecked(col_values) };
+                for (value_idx, archived_value) in archived_col_values.iter().enumerate() {
+                    if bitmask[value_idx] {
                         let value = rkyv::deserialize::<Value, rancor::Error>(archived_value)
                             .map_err(|error| {
                                 Error::CouldNotReadData(format!(
