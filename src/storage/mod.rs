@@ -52,6 +52,15 @@ pub struct PhysicalColumn {
     pub data: Vec<Value>,
 }
 
+impl From<ColumnDef> for PhysicalColumn {
+    fn from(column_def: ColumnDef) -> Self {
+        Self {
+            column_def,
+            data: Vec::new(),
+        }
+    }
+}
+
 impl PhysicalColumn {
     pub fn into_output_column(self) -> OutputColumn {
         OutputColumn {

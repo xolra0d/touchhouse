@@ -5,11 +5,11 @@ use sqlparser::ast::{
 };
 use sqlparser::dialect::ClickHouseDialect;
 use sqlparser::parser::Parser;
+use std::fmt;
 
 use crate::error::{Error, Result};
-use crate::sql::output_table::OutputColumn;
 use crate::storage::table_metadata::TableSettings;
-use crate::storage::{ColumnDef, TableDef, Value};
+use crate::storage::{ColumnDef, PhysicalColumn, TableDef, Value};
 
 /// Source for a Scan operation
 #[derive(Debug, Clone, PartialEq)]
@@ -22,19 +22,12 @@ pub enum ScanSource {
 pub enum ProjectionValue {
     Value(Value),
     ColumnDef(ColumnDef),
-    Function(Function),
 }
 
 impl ProjectionValue {
     pub fn get_col_def(&self) -> Option<&ColumnDef> {
         match self {
             ProjectionValue::ColumnDef(col_def) => Some(col_def),
-            ProjectionValue::Function(function) => match function {
-                Function::Avg(projection)
-                | Function::Max(projection)
-                | Function::Min(projection)
-                | Function::Sum(projection) => projection.source.get_col_def(),
-            },
             ProjectionValue::Value(_) => None,
         }
     }
@@ -47,7 +40,7 @@ pub struct Projection {
 }
 
 impl Projection {
-    pub fn try_from_ident(ident: &Ident, available_projections: &[Projection]) -> Result<Self> {
+    pub fn try_from_ident(ident: &Ident, available_projections: &[Self]) -> Result<Self> {
         let Some(projection) = available_projections
             .iter()
             .find(|proj| {
@@ -66,43 +59,35 @@ impl Projection {
 
         Ok(projection)
     }
+}
 
-    pub fn try_from_expr(expr: &Expr, available_projections: &[Self]) -> Result<Self> {
-        match expr {
-            Expr::Identifier(ident) => {
-                let projection = Self::try_from_ident(ident, available_projections)?;
-                Ok(projection)
-            }
-            Expr::Value(value) => {
-                let value = Value::try_from_untyped(value.value.clone())?;
-                Ok(Self {
-                    source: ProjectionValue::Value(value),
-                    alias: None,
-                })
-            }
-            Expr::Function(function) => Ok(Self {
-                source: ProjectionValue::Function(Function::try_parse(
-                    function,
-                    available_projections,
-                )?),
-                alias: None,
-            }),
-            _ => Err(Error::UnsupportedCommand(
-                "Only column identifiers and values are supported in projections".to_string(),
-            )),
+impl fmt::Display for Projection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), fmt::Error> {
+        if let Some(alias) = &self.alias {
+            return write!(f, "{alias}");
+        }
+        match &self.source {
+            ProjectionValue::Value(value) => write!(f, "{value:?}"),
+            ProjectionValue::ColumnDef(col_def) => write!(f, "{}", col_def.name),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub enum Function {
+pub struct AggregateProjection {
+    pub alias: Option<String>,
+    pub source: AggregateFunction,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum AggregateFunction {
     Min(Box<Projection>),
     Max(Box<Projection>),
     Sum(Box<Projection>),
     Avg(Box<Projection>),
 }
 
-impl Function {
+impl AggregateFunction {
     fn find_function(function_name: &str, mut args: Vec<Projection>) -> Result<Self> {
         let function_name = function_name.to_lowercase();
 
@@ -115,7 +100,7 @@ impl Function {
                     )));
                 }
 
-                Ok(Function::Min(Box::new(args.remove(0))))
+                Ok(AggregateFunction::Min(Box::new(args.remove(0))))
             }
             "max" => {
                 if args.len() != 1 {
@@ -125,7 +110,7 @@ impl Function {
                     )));
                 }
 
-                Ok(Function::Max(Box::new(args.remove(0))))
+                Ok(AggregateFunction::Max(Box::new(args.remove(0))))
             }
             "sum" => {
                 if args.len() != 1 {
@@ -135,7 +120,7 @@ impl Function {
                     )));
                 }
 
-                Ok(Function::Sum(Box::new(args.remove(0))))
+                Ok(AggregateFunction::Sum(Box::new(args.remove(0))))
             }
             "avg" => {
                 if args.len() != 1 {
@@ -145,7 +130,7 @@ impl Function {
                     )));
                 }
 
-                Ok(Function::Avg(Box::new(args.remove(0))))
+                Ok(AggregateFunction::Avg(Box::new(args.remove(0))))
             }
             _ => Err(Error::UnknownFunction(format!(
                 "Unknown function name: {function_name}"
@@ -197,7 +182,14 @@ impl Function {
                     let argument = match arg {
                         FunctionArg::Unnamed(arg_expr) => match arg_expr {
                             FunctionArgExpr::Expr(expr) => {
-                                Projection::try_from_expr(expr, available_projections)?
+                                match RawProjection::try_from(expr, &available_projections)? {
+                                    RawProjection::Projection(proj) => proj,
+                                    RawProjection::AggregateProjection(aggr_proj) => {
+                                        return Err(Error::InvalidSource(format!(
+                                            "Expected projection in ORDER BY, got ({aggr_proj:?}) instead.",
+                                        )));
+                                    }
+                                }
                             }
                             FunctionArgExpr::Wildcard => available_projections[0].clone(),
                             FunctionArgExpr::QualifiedWildcard(qualified_wildcard) => {
@@ -227,6 +219,44 @@ impl Function {
     }
 }
 
+/// Struct for converting any `sql_parser` projection inside of `sql_parser::Query` into either `Projection` or `AggregateFunction`
+pub enum RawProjection {
+    Projection(Projection),
+    AggregateProjection(AggregateProjection),
+}
+
+impl RawProjection {
+    pub fn try_from(expr: &Expr, available_projections: &[Projection]) -> Result<Self> {
+        match expr {
+            Expr::Identifier(ident) => {
+                let projection = Projection::try_from_ident(ident, available_projections)?;
+                Ok(Self::Projection(projection))
+            }
+            Expr::Value(value) => {
+                let value = Value::try_from_untyped(value.value.clone())?;
+                Ok(Self::Projection(Projection {
+                    source: ProjectionValue::Value(value),
+                    alias: None,
+                }))
+            }
+            Expr::Function(function) => Ok(Self::AggregateProjection(AggregateProjection {
+                source: AggregateFunction::try_parse(function, available_projections)?,
+                alias: None,
+            })),
+            _ => Err(Error::UnsupportedCommand(
+                "Only column identifiers and values are supported in projections".to_string(),
+            )),
+        }
+    }
+
+    pub fn set_alias(&mut self, alias: String) {
+        match self {
+            Self::Projection(proj) => proj.alias = Some(alias),
+            Self::AggregateProjection(proj) => proj.alias = Some(alias),
+        };
+    }
+}
+
 /// High level representation of the SQL query.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalPlan {
@@ -250,7 +280,7 @@ pub enum LogicalPlan {
     /// Insert values.
     Insert {
         table_def: TableDef,
-        columns: Vec<OutputColumn>,
+        columns: Vec<PhysicalColumn>,
     },
 
     DropDatabase {
@@ -278,13 +308,24 @@ pub enum LogicalPlan {
     },
 
     OrderBy {
-        column_defs: Vec<Vec<Projection>>,
+        projs: Vec<Vec<Projection>>,
         plan: Box<LogicalPlan>,
     },
 
     Limit {
         limit: Option<u64>,
         offset: u64, // default 0
+        plan: Box<LogicalPlan>,
+    },
+
+    Aggregate {
+        aggr_proj: Vec<AggregateProjection>,
+        group_by: Vec<Projection>, // todo: if GROUP BY ALL, then just store it as variant, like GroupBy::All, or GroupBy::Projections(Vec<Projection>)
+        plan: Box<LogicalPlan>,
+    },
+
+    Having {
+        expr: Box<Expr>,
         plan: Box<LogicalPlan>,
     },
 }
@@ -353,7 +394,7 @@ pub enum PhysicalPlan {
     /// Insert values.
     Insert {
         table_def: TableDef,
-        columns: Vec<OutputColumn>,
+        columns: Vec<PhysicalColumn>,
     },
 
     DropDatabase {
@@ -371,7 +412,10 @@ pub enum PhysicalPlan {
         scan_source: ScanSource,
         columns: Vec<Projection>,
         filter: Option<Box<Expr>>,
-        sort_by: Option<Vec<Vec<Projection>>>,
+        aggregate_cols: Vec<AggregateProjection>,
+        group_by: Vec<Projection>,
+        having: Option<Box<Expr>>,
+        order_by: Option<Vec<Vec<Projection>>>,
         limit: Option<u64>,
         offset: u64,
     },
@@ -399,16 +443,17 @@ impl From<LogicalPlan> for PhysicalPlan {
             LogicalPlan::DropDatabase { name, if_exists } => Self::DropDatabase { name, if_exists },
             LogicalPlan::DropTable { name, if_exists } => Self::DropTable { name, if_exists },
 
-            LogicalPlan::Scan { source } => {
-                Self::Select {
-                    scan_source: source,
-                    columns: Vec::new(), // to be filled,
-                    filter: None,
-                    sort_by: None,
-                    limit: None,
-                    offset: 0,
-                }
-            }
+            LogicalPlan::Scan { source } => Self::Select {
+                scan_source: source,
+                columns: Vec::new(),
+                filter: None,
+                aggregate_cols: Vec::new(),
+                group_by: Vec::new(),
+                having: None,
+                order_by: None,
+                limit: None,
+                offset: 0,
+            },
             plan @ (LogicalPlan::Projection { .. }
             | LogicalPlan::Filter { .. }
             | LogicalPlan::OrderBy { .. }
@@ -432,7 +477,7 @@ impl From<LogicalPlan> for PhysicalPlan {
                             current = *inner;
                         }
                         LogicalPlan::OrderBy {
-                            column_defs,
+                            projs: column_defs,
                             plan: inner,
                         } => {
                             sort_by = Some(column_defs);
@@ -461,7 +506,7 @@ impl From<LogicalPlan> for PhysicalPlan {
                                 scan_source: source,
                                 columns: columns.unwrap_or_default(),
                                 filter,
-                                sort_by,
+                                order_by: sort_by,
                                 limit,
                                 offset,
                             };

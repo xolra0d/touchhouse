@@ -1,10 +1,13 @@
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
-use crate::sql::sql_parser::{LogicalPlan, Projection, ProjectionValue, ScanSource};
+use crate::sql::sql_parser::{
+    AggregateProjection, LogicalPlan, Projection, ProjectionValue, RawProjection, ScanSource,
+};
 use crate::storage::TableDef;
 
 use sqlparser::ast::{
-    Expr, LimitClause, OrderByKind, Query, SelectItem, SetExpr, TableFactor, Value as SQLValue,
+    Expr, GroupByExpr, LimitClause, OrderByKind, Query, SelectItem, SetExpr, TableFactor,
+    Value as SQLValue,
 };
 
 impl LogicalPlan {
@@ -26,6 +29,8 @@ impl LogicalPlan {
     ///     8. Column not found in table: `ColumnNotFound`.
     ///     9. Invalid LIMIT/OFFSET value: `InvalidLimitValue`.
     pub fn from_query(query: &Query) -> Result<Self> {
+        // dbg!(query);
+        // panic!();
         let SetExpr::Select(select) = &*query.body else {
             return Err(Error::UnsupportedCommand(
                 "Only SELECT queries are supported".to_string(),
@@ -70,7 +75,9 @@ impl LogicalPlan {
             source: scan_source,
         };
 
-        let mut read_columns: Vec<Projection> = Vec::with_capacity(select.projection.len());
+        let mut read_columns: Vec<Projection> = Vec::with_capacity(select.projection.len() / 2);
+        let mut aggregate_projections: Vec<AggregateProjection> =
+            Vec::with_capacity(select.projection.len() / 2);
 
         let available_projections = Self::extract_columns_from_plan(&plan)?;
 
@@ -79,6 +86,7 @@ impl LogicalPlan {
         // * Wildcard at the end, meaning all columns which are not specified.
         // * No wildcard.
         let mut wildcard = None;
+
         for (idx, projection) in select.projection.iter().enumerate() {
             match projection {
                 SelectItem::Wildcard(_) => {
@@ -95,10 +103,13 @@ impl LogicalPlan {
                             "Columns after wildcard are not supported".to_string(),
                         ));
                     }
-
-                    let projection = Projection::try_from_expr(expr, &available_projections)?;
-
-                    read_columns.push(projection);
+                    let raw_projection = RawProjection::try_from(expr, &available_projections)?;
+                    match raw_projection {
+                        RawProjection::Projection(projection) => read_columns.push(projection),
+                        RawProjection::AggregateProjection(projection) => {
+                            aggregate_projections.push(projection)
+                        }
+                    };
                 }
                 SelectItem::ExprWithAlias { expr, alias } => {
                     if wildcard.is_some() {
@@ -106,11 +117,14 @@ impl LogicalPlan {
                             "Columns after wildcard are not supported".to_string(),
                         ));
                     }
-
-                    let mut projection = Projection::try_from_expr(expr, &available_projections)?;
-                    projection.alias = Some(alias.value.clone());
-
-                    read_columns.push(projection);
+                    let mut raw_projection = RawProjection::try_from(expr, &available_projections)?;
+                    raw_projection.set_alias(alias.value.clone());
+                    match raw_projection {
+                        RawProjection::Projection(projection) => read_columns.push(projection),
+                        RawProjection::AggregateProjection(projection) => {
+                            aggregate_projections.push(projection)
+                        }
+                    };
                 }
                 SelectItem::QualifiedWildcard(..) => {
                     return Err(Error::UnsupportedCommand(
@@ -144,11 +158,68 @@ impl LogicalPlan {
             plan: Box::new(plan),
         };
 
+        match &select.group_by {
+            GroupByExpr::All(modifiers) => {
+                if !modifiers.is_empty() {
+                    return Err(Error::UnsupportedCommand(format!(
+                        "Modifiers ({:?}) are not supported in GROUP BY clause",
+                        modifiers
+                    )));
+                }
+
+                plan = LogicalPlan::Aggregate {
+                    aggr_proj: aggregate_projections,
+                    group_by: read_columns.clone(),
+                    plan: Box::new(plan),
+                };
+            }
+            GroupByExpr::Expressions(expressions, modifiers) => {
+                if !modifiers.is_empty() {
+                    return Err(Error::UnsupportedCommand(format!(
+                        "Modifiers ({:?}) are not supported in GROUP BY clause",
+                        modifiers
+                    )));
+                }
+
+                let mut group_by = Vec::with_capacity(expressions.len());
+
+                for expr in expressions {
+                    let proj = match RawProjection::try_from(expr, &available_projections)? {
+                        RawProjection::Projection(proj) => proj,
+                        RawProjection::AggregateProjection(aggr_proj) => {
+                            return Err(Error::InvalidSource(format!(
+                                "Expected projection in ORDER BY, got ({aggr_proj:?}) instead.",
+                            )));
+                        }
+                    };
+
+                    group_by.push(proj);
+                }
+
+                if let Some(proj) = read_columns.iter().find(|proj| !group_by.contains(proj)) {
+                    return Err(Error::ColumnNotInGroupBy(proj.to_string()));
+                }
+
+                plan = LogicalPlan::Aggregate {
+                    aggr_proj: aggregate_projections,
+                    group_by,
+                    plan: Box::new(plan),
+                };
+            }
+        }
+
+        if let Some(expr) = &select.having {
+            plan = LogicalPlan::Having {
+                expr: Box::new(expr.clone()),
+                plan: Box::new(plan),
+            };
+        }
+
         if let Some(order_by) = &query.order_by {
             match &order_by.kind {
                 OrderByKind::All(_params) => {
                     plan = LogicalPlan::OrderBy {
-                        column_defs: vec![read_columns],
+                        projs: vec![read_columns],
                         plan: Box::new(plan),
                     };
                 }
@@ -161,7 +232,7 @@ impl LogicalPlan {
                     }
 
                     plan = LogicalPlan::OrderBy {
-                        column_defs: order_by_all,
+                        projs: order_by_all,
                         plan: Box::new(plan),
                     };
                 }

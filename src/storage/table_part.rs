@@ -184,7 +184,7 @@ impl TablePart {
     /// Returns: Self or engine error
     pub fn try_new(
         table_def: &TableDef,
-        columns: Vec<OutputColumn>,
+        columns: Vec<PhysicalColumn>,
         name: Option<String>,
     ) -> Result<Self> {
         if columns.is_empty() {
@@ -205,7 +205,7 @@ impl TablePart {
             .engine
             .get_engine(EngineConfig::default());
         let ordered_out_cols = engine.order_columns(
-            columns,
+            columns.into_iter().map(OutputColumn::from).collect(),
             &table_config
                 .metadata
                 .schema
@@ -221,7 +221,7 @@ impl TablePart {
 
         let ordered_cols: Result<Vec<_>> = ordered_out_cols
             .into_iter()
-            .map(OutputColumn::into_column)
+            .map(PhysicalColumn::try_from)
             .collect();
 
         let ordered_cols = ordered_cols?;

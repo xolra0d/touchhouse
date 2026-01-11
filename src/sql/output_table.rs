@@ -10,17 +10,33 @@ pub struct OutputColumn {
     pub data: Vec<Value>,
 }
 
-impl OutputColumn {
-    pub fn into_column(self) -> Result<PhysicalColumn> {
-        let ProjectionValue::ColumnDef(column_def) = self.proj.source else {
+impl From<PhysicalColumn> for OutputColumn {
+    fn from(value: PhysicalColumn) -> Self {
+        let PhysicalColumn { column_def, data } = value;
+
+        OutputColumn {
+            proj: Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(column_def),
+            },
+            data,
+        }
+    }
+}
+
+impl TryFrom<OutputColumn> for PhysicalColumn {
+    type Error = Error;
+
+    fn try_from(value: OutputColumn) -> Result<Self> {
+        let ProjectionValue::ColumnDef(column_def) = value.proj.source else {
             return Err(Error::InvalidSource(format!(
                 "expected to be column definition, got ({:?}) instead during output to physical column conversion.",
-                self.proj.source
+                value.proj.source
             )));
         };
         Ok(PhysicalColumn {
             column_def,
-            data: self.data,
+            data: value.data,
         })
     }
 }

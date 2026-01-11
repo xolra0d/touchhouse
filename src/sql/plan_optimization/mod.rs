@@ -1,6 +1,6 @@
 use crate::sql::sql_parser::LogicalPlan;
 
-mod query_flattening;
+// mod query_flattening;
 
 impl LogicalPlan {
     /// Optimizes a logical plan by flattening nested structures.
@@ -9,6 +9,7 @@ impl LogicalPlan {
     ///
     /// Returns: Optimized `LogicalPlan`.
     pub fn optimize(self) -> LogicalPlan {
-        self.flatten()
+        // self.flatten()
+        self
     }
 }

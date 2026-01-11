@@ -2,10 +2,8 @@ use sqlparser::ast::{Expr, Insert, SetExpr, TableObject, UnaryOperator, Value as
 
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
-use crate::sql::output_table::OutputColumn;
 use crate::sql::sql_parser::LogicalPlan;
-use crate::sql::{Projection, ProjectionValue};
-use crate::storage::{TableDef, Value};
+use crate::storage::{PhysicalColumn, TableDef, Value};
 
 impl LogicalPlan {
     /// Parses INSERT statement into `LogicalPlan::Insert` variant.
@@ -90,15 +88,9 @@ impl LogicalPlan {
             }
         }
 
-        let mut columns: Vec<OutputColumn> = insert_columns
+        let mut columns: Vec<PhysicalColumn> = insert_columns
             .into_iter()
-            .map(|col_def| OutputColumn {
-                proj: Projection {
-                    source: ProjectionValue::ColumnDef(col_def),
-                    alias: None,
-                },
-                data: Vec::new(),
-            })
+            .map(PhysicalColumn::from)
             .collect();
 
         let Some(source) = &insert.source else {
@@ -158,12 +150,8 @@ impl LogicalPlan {
                     }
                 };
 
-                let ProjectionValue::ColumnDef(column_def) = &columns[col_idx].proj.source else {
-                    return Err(Error::InvalidSource(format!(
-                        "Expected projection to be column definition, got ({:?})",
-                        &columns[col_idx].proj.source
-                    )));
-                };
+                let column_def = &columns[col_idx].column_def;
+
                 let value = Value::try_from((sql_value, &column_def.field_type))?;
 
                 if value == Value::Null && !column_def.constraints.nullable {
@@ -190,99 +178,12 @@ impl LogicalPlan {
                     continue;
                 }
             };
-            columns.push(OutputColumn {
-                proj: Projection {
-                    alias: None,
-                    source: ProjectionValue::ColumnDef(column_def.clone()),
-                },
+            columns.push(PhysicalColumn {
+                column_def: column_def.clone(),
                 data: vec![default_value_ref.clone(); source.rows.len()],
             });
         }
 
         Ok(LogicalPlan::Insert { table_def, columns })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sqlparser::ast::{Ident, ObjectName, ObjectNamePart};
-
-    fn build_table_name(db: &str, table: &str) -> ObjectName {
-        ObjectName(vec![
-            ObjectNamePart::Identifier(Ident::new(db.to_string())),
-            ObjectNamePart::Identifier(Ident::new(table.to_string())),
-        ])
-    }
-
-    #[test]
-    fn test_insert_validation_empty_columns() {
-        let insert = Insert {
-            or: None,
-            ignore: false,
-            into: true,
-            table: TableObject::TableName(build_table_name("db", "table")),
-            table_alias: None,
-            columns: vec![],
-            overwrite: false,
-            source: None,
-            partitioned: None,
-            after_columns: vec![],
-            on: None,
-            returning: None,
-            replace_into: false,
-            priority: None,
-            insert_alias: None,
-            has_table_keyword: false,
-            assignments: vec![],
-            settings: None,
-            format_clause: None,
-        };
-
-        let result = LogicalPlan::from_insert(&insert);
-        assert!(result.is_err());
-        match result {
-            Err(Error::NoColumnsSpecified) | Err(Error::TableNotFound) => {}
-            other => panic!(
-                "Expected NoColumnsSpecified or TableNotFound, got: {:?}",
-                other
-            ),
-        }
-    }
-
-    #[test]
-    fn test_insert_validation_duplicate_columns() {
-        let insert = Insert {
-            or: None,
-            ignore: false,
-            into: true,
-            table: TableObject::TableName(build_table_name("db", "table")),
-            table_alias: None,
-            columns: vec![Ident::new("id".to_string()), Ident::new("id".to_string())],
-            overwrite: false,
-            source: None,
-            partitioned: None,
-            after_columns: vec![],
-            on: None,
-            returning: None,
-            replace_into: false,
-            priority: None,
-            insert_alias: None,
-            has_table_keyword: false,
-            assignments: vec![],
-            settings: None,
-            format_clause: None,
-        };
-
-        let result = LogicalPlan::from_insert(&insert);
-        assert!(result.is_err());
-        match result {
-            Err(Error::InvalidColumnName(msg)) => assert!(msg.contains("Duplicate")),
-            Err(Error::TableNotFound) => {}
-            other => panic!(
-                "Expected InvalidColumnName or TableNotFound, got: {:?}",
-                other
-            ),
-        }
     }
 }

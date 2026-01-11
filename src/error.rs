@@ -77,6 +77,8 @@ pub enum Error {
     InvalidFunctionParams(String),
     #[display("Part ({_0}) does not have any columns.")]
     PartDoesNotHaveColumns(String),
+    #[display("Column ({_0}) is not under aggregate function and not in GROUP BY keys.")]
+    ColumnNotInGroupBy(String),
 
     // mod engines
     #[display("No ORDER BY columns found")]

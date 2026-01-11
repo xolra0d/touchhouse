@@ -52,7 +52,10 @@ impl CommandRunner {
                 scan_source,
                 columns,
                 filter,
-                sort_by,
+                order_by: sort_by,
+                aggregate_cols,
+                group_by,
+                having,
                 limit,
                 offset,
             } => Self::select(
