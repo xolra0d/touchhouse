@@ -31,8 +31,8 @@ impl CommandRunner {
         projections: Vec<Projection>,
         filter_expr: Option<Expr>,
         order_by: Option<Vec<Vec<Projection>>>,
-        limit: Option<u64>,
-        offset: u64,
+        limit: Option<usize>,
+        offset: usize,
     ) -> Result<OutputTable> {
         let table_def = match table_def {
             ScanSource::Table(table_def) => table_def,
@@ -48,8 +48,8 @@ impl CommandRunner {
         };
 
         let optimal_strategy = Strategy::new(
-            limit.map(|x| x as usize),
-            offset as usize,
+            limit,
+            offset,
             table_config
                 .infos
                 .iter()
@@ -88,7 +88,7 @@ impl CommandRunner {
         }
 
         if let Some(col_length) = output_columns.first().map(|x| x.data.len()) {
-            let final_offset = col_length.min(offset as usize);
+            let final_offset = col_length.min(offset);
             for out_col in &mut output_columns {
                 out_col.data.drain(0..final_offset);
             }
@@ -97,7 +97,7 @@ impl CommandRunner {
         if let Some(col_length) = output_columns.first().map(|x| x.data.len())
             && let Some(limit) = limit
         {
-            let final_length = col_length.min(limit as usize);
+            let final_length = col_length.min(limit);
             for out_col in &mut output_columns {
                 out_col.data.truncate(final_length);
             }

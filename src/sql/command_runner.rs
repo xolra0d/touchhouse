@@ -20,7 +20,7 @@ impl CommandRunner {
 
         let logical_plan = logical_plan.optimize();
 
-        let physical_plan = PhysicalPlan::from(logical_plan);
+        let physical_plan = PhysicalPlan::try_from(logical_plan)?;
 
         let complexity = physical_plan.get_complexity();
         DATABASE_LOAD.fetch_add(complexity, std::sync::atomic::Ordering::Relaxed);

@@ -81,10 +81,10 @@ pub struct AggregateProjection {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum AggregateFunction {
-    Min(Box<Projection>),
-    Max(Box<Projection>),
-    Sum(Box<Projection>),
-    Avg(Box<Projection>),
+    Min(Projection),
+    Max(Projection),
+    Sum(Projection),
+    Avg(Projection),
 }
 
 impl AggregateFunction {
@@ -100,7 +100,7 @@ impl AggregateFunction {
                     )));
                 }
 
-                Ok(AggregateFunction::Min(Box::new(args.remove(0))))
+                Ok(AggregateFunction::Min(args.remove(0)))
             }
             "max" => {
                 if args.len() != 1 {
@@ -110,7 +110,7 @@ impl AggregateFunction {
                     )));
                 }
 
-                Ok(AggregateFunction::Max(Box::new(args.remove(0))))
+                Ok(AggregateFunction::Max(args.remove(0)))
             }
             "sum" => {
                 if args.len() != 1 {
@@ -120,7 +120,7 @@ impl AggregateFunction {
                     )));
                 }
 
-                Ok(AggregateFunction::Sum(Box::new(args.remove(0))))
+                Ok(AggregateFunction::Sum(args.remove(0)))
             }
             "avg" => {
                 if args.len() != 1 {
@@ -130,7 +130,7 @@ impl AggregateFunction {
                     )));
                 }
 
-                Ok(AggregateFunction::Avg(Box::new(args.remove(0))))
+                Ok(AggregateFunction::Avg(args.remove(0)))
             }
             _ => Err(Error::UnknownFunction(format!(
                 "Unknown function name: {function_name}"
@@ -219,7 +219,7 @@ impl AggregateFunction {
     }
 }
 
-/// Struct for converting any `sql_parser` projection inside of `sql_parser::Query` into either `Projection` or `AggregateFunction`
+/// Struct for converting any `sql_parser::Expr` projection inside of `sql_parser::Query` into either `Projection` or `AggregateProjection`
 pub enum RawProjection {
     Projection(Projection),
     AggregateProjection(AggregateProjection),
@@ -313,8 +313,8 @@ pub enum LogicalPlan {
     },
 
     Limit {
-        limit: Option<u64>,
-        offset: u64, // default 0
+        limit: Option<usize>,
+        offset: usize, // default 0
         plan: Box<LogicalPlan>,
     },
 
@@ -415,16 +415,17 @@ pub enum PhysicalPlan {
         aggregate_cols: Vec<AggregateProjection>,
         group_by: Vec<Projection>,
         having: Option<Box<Expr>>,
-        order_by: Option<Vec<Vec<Projection>>>,
-        limit: Option<u64>,
-        offset: u64,
+        sort_by: Option<Vec<Vec<Projection>>>,
+        limit: Option<usize>,
+        offset: usize,
     },
 }
 
-impl From<LogicalPlan> for PhysicalPlan {
-    fn from(plan: LogicalPlan) -> Self {
+impl TryFrom<LogicalPlan> for PhysicalPlan {
+    type Error = Error;
+    fn try_from(plan: LogicalPlan) -> Result<Self> {
         match plan {
-            LogicalPlan::Skip => Self::Skip,
+            LogicalPlan::Skip => Ok(Self::Skip),
             LogicalPlan::CreateDatabase { name } => Self::CreateDatabase { name },
             LogicalPlan::CreateTable {
                 name,
@@ -450,7 +451,7 @@ impl From<LogicalPlan> for PhysicalPlan {
                 aggregate_cols: Vec::new(),
                 group_by: Vec::new(),
                 having: None,
-                order_by: None,
+                sort_by: None,
                 limit: None,
                 offset: 0,
             },
@@ -477,7 +478,7 @@ impl From<LogicalPlan> for PhysicalPlan {
                             current = *inner;
                         }
                         LogicalPlan::OrderBy {
-                            projs: column_defs,
+                            column_defs,
                             plan: inner,
                         } => {
                             sort_by = Some(column_defs);
@@ -506,7 +507,7 @@ impl From<LogicalPlan> for PhysicalPlan {
                                 scan_source: source,
                                 columns: columns.unwrap_or_default(),
                                 filter,
-                                order_by: sort_by,
+                                sort_by,
                                 limit,
                                 offset,
                             };
