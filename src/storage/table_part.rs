@@ -1,10 +1,11 @@
 use crate::engines::EngineConfig;
 use crate::error::{Error, Result};
-use crate::runtime_config::TABLE_DATA;
+use crate::sql::{Projection, ProjectionValue};
 use crate::storage::compression::{compress_bytes, decompress_bytes};
-use crate::storage::{ColumnDef, CompressionType, PhysicalColumn, TableDef, Value};
+use crate::storage::{
+    ColumnDef, CompressionType, OutputColumn, PhysicalColumn, TableDef, TableMetadata, Value,
+};
 
-use crate::sql::{OutputColumn, Projection, ProjectionValue};
 use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -29,7 +30,7 @@ pub struct Mark {
 }
 
 /// Immutable table part information.
-#[derive(Debug, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize)]
+#[derive(Debug, Clone, PartialEq, RkyvSerialize, RkyvArchive, RkyvDeserialize)]
 pub struct TablePartInfo {
     pub name: String,
     pub row_count: u64, // max rows per tablepart = 18_446_744_073_709_551_615
@@ -183,7 +184,7 @@ impl TablePart {
     ///
     /// Returns: Self or engine error
     pub fn try_new(
-        table_def: &TableDef,
+        table_metadata: &TableMetadata,
         columns: Vec<PhysicalColumn>,
         name: Option<String>,
     ) -> Result<Self> {
@@ -195,19 +196,13 @@ impl TablePart {
         }
         let name = name.unwrap_or(Uuid::now_v7().to_string());
 
-        let Some(table_config) = TABLE_DATA.get(table_def) else {
-            return Err(Error::TableNotFound);
-        };
-
-        let engine = table_config
-            .metadata
+        let engine = table_metadata
             .settings
             .engine
             .get_engine(EngineConfig::default());
         let ordered_out_cols = engine.order_columns(
             columns.into_iter().map(OutputColumn::from).collect(),
-            &table_config
-                .metadata
+            &table_metadata
                 .schema
                 .order_by
                 .iter()
@@ -216,7 +211,7 @@ impl TablePart {
                     source: ProjectionValue::ColumnDef(col_def.clone()),
                 })
                 .collect::<Vec<_>>(),
-            &table_config.metadata.schema.primary_key,
+            &table_metadata.schema.primary_key,
         )?;
 
         let ordered_cols: Result<Vec<_>> = ordered_out_cols
@@ -228,8 +223,8 @@ impl TablePart {
 
         let marks = generate_indexes(
             &ordered_cols,
-            &table_config.metadata.schema.primary_key,
-            table_config.metadata.settings.index_granularity,
+            &table_metadata.schema.primary_key,
+            table_metadata.settings.index_granularity,
         );
         let row_count = ordered_cols[0].data.len() as u64;
 
@@ -255,21 +250,14 @@ impl TablePart {
     /// All files include magic bytes and CRC32 checksums.
     ///
     /// Returns: Ok or `CouldNotInsertData` on I/O failure
-    pub fn save_raw(&mut self, table_def: &TableDef) -> Result<()> {
+    pub fn save_raw(&mut self, table_def: &TableDef, index_granularity: u32) -> Result<()> {
         let raw_dir = self.get_raw_dir(table_def);
         std::fs::create_dir_all(&raw_dir)
             .map_err(|_| Error::CouldNotInsertData("Failed to create raw directory".to_string()))?;
 
-        let granularity = {
-            let Some(config) = TABLE_DATA.get(table_def) else {
-                return Err(Error::TableNotFound);
-            };
-            Ok(config.metadata.settings.index_granularity)
-        }?;
-
         for col_idx in 0..self.data.len() {
             let column_file = raw_dir.join(format!("{}.bin", self.data[col_idx].column_def.name));
-            self.write_column_with_marks(col_idx, &column_file, granularity)?;
+            self.write_column_with_marks(col_idx, &column_file, index_granularity)?;
         }
 
         self.info.write_to(table_def, true)?;
@@ -335,18 +323,18 @@ impl TablePart {
     /// Rolls back memory change on filesystem failure.
     ///
     /// Returns: Ok or `CouldNotInsertData` with rollback on failure
-    pub fn move_to_normal(self, table_def: &TableDef) -> Result<()> {
+    pub fn move_to_normal(
+        self,
+        table_def: &TableDef,
+        infos: &mut Vec<TablePartInfo>,
+    ) -> Result<()> {
         let raw_dir = self.get_raw_dir(table_def);
         let normal_dir = table_def.get_path().join(&self.info.name);
 
-        let Some(mut result) = TABLE_DATA.get_mut(table_def) else {
-            return Err(Error::TableNotFound);
-        };
-        let part_name = self.info.name.clone();
-        result.infos.push(self.info);
+        infos.push(self.info);
 
         if let Err(e) = std::fs::rename(&raw_dir, &normal_dir) {
-            result.infos.pop_if(|info| info.name == part_name);
+            infos.pop();
             return Err(Error::CouldNotInsertData(format!(
                 "Failed to move part directory: {e}"
             )));

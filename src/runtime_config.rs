@@ -14,7 +14,7 @@ pub static TABLE_DATA: std::sync::LazyLock<DashMap<TableDef, TableConfig>> =
     std::sync::LazyLock::new(DashMap::default);
 
 /// Signifies when it's ok to lock `TABLE_DATA` to merge `TablePart`.
-/// Decrements is only done through `Drop` (it's UB to `Drop` item twice, so `DATABASE_LOAD` won't wrap to `usize::MAX`).
+/// Decrements is only done through implementing `Drop`.
 pub static DATABASE_LOAD: std::sync::LazyLock<AtomicUsize> =
     std::sync::LazyLock::new(AtomicUsize::default);
 

@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::sql::sql_parser::LogicalPlan;
+use crate::sql::LogicalPlan;
 use crate::storage::TableDef;
 use sqlparser::ast::{ObjectName, ObjectNamePart, ObjectType};
 

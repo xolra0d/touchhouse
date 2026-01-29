@@ -1,10 +1,18 @@
-use crate::config::CONFIG;
-use crate::error::{Error, Result};
-use crate::runtime_config::{DATABASE_LOAD, TABLE_DATA};
-use crate::storage::{PhysicalColumn, TableDef, TablePart, TablePartInfo, Value};
+use crate::error::Result;
+use crate::storage::{NativeStorage, StorageRead, TablePart, ToValue, Value};
+
+use std::{cmp::Ordering, time::Duration};
 
 use log::{error, info, warn};
 use uuid::Uuid;
+
+use crate::{
+    config::CONFIG,
+    runtime_config::{DATABASE_LOAD, TABLE_DATA},
+    storage::{PhysicalColumn, TableDef, TableMetadata, TablePartInfo},
+};
+
+const SLEEP_IF_NOT_FOUND: Duration = Duration::from_secs(5);
 
 /// Background merge service that combines table parts to optimize storage and queries.
 pub struct BackgroundMerge;
@@ -17,31 +25,57 @@ impl BackgroundMerge {
     /// Runs indefinitely until the process is terminated.
     pub fn start() {
         info!("Background merges started");
+
         loop {
             if DATABASE_LOAD.load(std::sync::atomic::Ordering::Relaxed)
                 >= CONFIG.get_background_merge_available_under()
             {
-                // too busy to allocate resources for background merges
-                std::thread::sleep(std::time::Duration::from_secs(5));
+                // Too busy with selects to allocate resources and lock for background merges
+                std::thread::sleep(SLEEP_IF_NOT_FOUND);
                 continue;
             }
 
-            let Some(merge_data) = find_two_parts() else {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+            let Some(parts_to_merge) = Self::find_parts_to_merge() else {
+                std::thread::sleep(SLEEP_IF_NOT_FOUND);
                 continue;
             };
 
-            let Some((part_0_cols, part_1_cols)) = Self::load_both_parts(&merge_data) else {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                continue;
+            let part_1_cols = match Self::load_part_cols(
+                &parts_to_merge.table_def,
+                &parts_to_merge.part_1_info,
+            ) {
+                Ok(cols) => cols,
+                Err(error) => {
+                    error!(
+                        "Error loading part ({}): {error:?}",
+                        &parts_to_merge.part_1_info.name
+                    );
+
+                    std::thread::sleep(SLEEP_IF_NOT_FOUND);
+                    continue;
+                }
+            };
+            let part_2_cols = match Self::load_part_cols(
+                &parts_to_merge.table_def,
+                &parts_to_merge.part_2_info,
+            ) {
+                Ok(cols) => cols,
+                Err(error) => {
+                    error!(
+                        "Error loading part ({}): {error:?}",
+                        &parts_to_merge.part_2_info.name
+                    );
+
+                    std::thread::sleep(SLEEP_IF_NOT_FOUND);
+                    continue;
+                }
             };
 
-            let merged = Self::merge_parts(part_0_cols, part_1_cols);
-
+            let combined_cols = Self::combine_cols(part_1_cols, part_2_cols);
             let mut new_part = match TablePart::try_new(
-                &merge_data.table_def,
-                merged,
-                Some(merge_data.part_1.name.clone()), // use latest name of two for proper future merging
+                &parts_to_merge.table_metadata,
+                combined_cols,
+                Some(parts_to_merge.part_2_info.name.clone()), // use latest name of two for proper future merging
             ) {
                 Ok(new_part) => new_part,
                 Err(error) => {
@@ -49,76 +83,79 @@ impl BackgroundMerge {
                     continue;
                 }
             };
-
-            if let Err(error) = new_part.save_raw(&merge_data.table_def) {
+            if let Err(error) = new_part.save_raw(
+                &parts_to_merge.table_def,
+                parts_to_merge.table_metadata.settings.index_granularity,
+            ) {
                 error!("Failed to save merged TablePart: {error}");
                 continue;
             }
 
-            if !Self::atomic_part_move(merge_data, new_part) {
+            if !Self::atomic_part_move(parts_to_merge, new_part) {
                 error!("Failed to move merged TablePart");
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
     }
 
-    /// Loads all columns from a table part into memory.
-    ///
-    /// Returns:
-    ///   * Ok: `Vec<Column>` with all part data.
-    ///   * Error: `CouldNotReadData` on I/O or deserialization failure.
-    fn load_part(table_def: &TableDef, part: &TablePartInfo) -> Result<Vec<PhysicalColumn>> {
-        let mut columns = Vec::new();
+    fn find_parts_to_merge() -> Option<PartsToMerge> {
+        let table = TABLE_DATA.iter().find(|x| x.infos.len() > 1)?;
 
-        // column-stored version
-        let mut marks = vec![Vec::new(); part.column_defs.len()];
-        for mark in &part.marks {
-            for (mark_idx, mark_info) in mark.info.iter().enumerate() {
-                marks[mark_idx].push(mark_info.clone());
-            }
-        }
+        let mut parts_names: Vec<_> = table.infos.iter().map(|x| &x.name).collect();
+        parts_names.sort_unstable_by(|a, b| cmp_uuid_strs_asc(a, b));
 
-        for (col_idx, column_def) in part.column_defs.iter().enumerate() {
-            let mmap = PhysicalColumn::open_as_mmap(&part.get_column_path(table_def, column_def))?;
+        let part_1 = table.infos.iter().find(|x| x.name == *parts_names[0])?;
+        let part_2 = table.infos.iter().find(|x| x.name == *parts_names[1])?;
 
-            let mut data = Vec::new();
-            for mark_info in &marks[col_idx] {
-                let granule_data = TablePartInfo::get_granule_bytes_decompressed(
-                    &mmap,
-                    mark_info,
-                    &column_def.constraints.compression_type,
-                )?;
-                let granule_data = rkyv::from_bytes::<Vec<Value>, rkyv::rancor::Error>(
-                    &granule_data,
-                )
-                .map_err(|error| {
-                    Error::CouldNotReadData(format!("Could not read data while merging: {error}"))
-                })?;
-                data.extend(granule_data);
-            }
-            let column = PhysicalColumn {
+        Some(PartsToMerge {
+            table_def: table.key().clone(),
+            table_metadata: table.value().metadata.clone(),
+            part_1_info: part_1.clone(),
+            part_2_info: part_2.clone(),
+        })
+    }
+
+    fn load_part_cols(
+        table_def: &TableDef,
+        part_info: &TablePartInfo,
+    ) -> Result<Vec<PhysicalColumn>> {
+        let mut columns: Vec<_> = part_info
+            .column_defs
+            .iter()
+            .map(|column_def| PhysicalColumn {
                 column_def: column_def.clone(),
-                data,
-            };
-            columns.push(column);
+                data: Vec::new(),
+            })
+            .collect();
+
+        let mut storage = NativeStorage::try_from(table_def)?;
+
+        for _ in 0..part_info.marks.len() {
+            storage.load_next_chunk()?;
+
+            for column_idx in 0..part_info.column_defs.len() {
+                let data = storage.access_chunk_column(column_idx)?;
+                let data = data
+                    .into_iter()
+                    .map(|x| x.to_value())
+                    .collect::<Result<Vec<Value>>>()?;
+                columns[column_idx].data.extend(data);
+            }
         }
+
         Ok(columns)
     }
 
-    /// Merges two parts' columns into one.
-    ///
-    /// Extends `part_0` with data from `part_1`. If a column exists in `part_1` but not `part_0`,
-    /// fills missing rows with default values.
-    fn merge_parts(
-        mut part_0: Vec<PhysicalColumn>,
-        part_1: Vec<PhysicalColumn>,
+    fn combine_cols(
+        mut cols1: Vec<PhysicalColumn>,
+        cols2: Vec<PhysicalColumn>,
     ) -> Vec<PhysicalColumn> {
-        for column_1 in part_1 {
-            if let Some(position) = part_0
+        for column_1 in cols2 {
+            if let Some(position) = cols1
                 .iter()
                 .position(|col| col.column_def == column_1.column_def)
             {
-                part_0[position].data.extend(column_1.data.into_iter()); // parts are guaranteed to be non-empty.
+                cols1[position].data.extend(column_1.data); // parts are guaranteed to be non-empty.
             } else {
                 let default_value = column_1
                     .column_def
@@ -126,45 +163,16 @@ impl BackgroundMerge {
                     .default
                     .clone()
                     .unwrap_or_default();
-                let mut data = vec![default_value; part_0[0].data.len()];
+                let mut data = vec![default_value; cols1[0].data.len()];
                 data.extend(column_1.data.into_iter());
-                part_0.push(PhysicalColumn {
+                cols1.push(PhysicalColumn {
                     column_def: column_1.column_def.clone(),
                     data,
                 });
             }
         }
 
-        part_0
-    }
-
-    /// Loads both parts to be merged into memory.
-    ///
-    /// Returns: `Some((part_0_cols, part_1_cols))` on success, `None` on failure.
-    fn load_both_parts(
-        merge_data: &MergeData,
-    ) -> Option<(Vec<PhysicalColumn>, Vec<PhysicalColumn>)> {
-        let part_0_cols = Self::load_part(&merge_data.table_def, &merge_data.part_0)
-            .map_err(|error| {
-                error!(
-                    "Error loading part ({}): {error:?}",
-                    &merge_data.part_0.name
-                );
-                error
-            })
-            .ok()?;
-
-        let part_1_cols = Self::load_part(&merge_data.table_def, &merge_data.part_1)
-            .map_err(|error| {
-                error!(
-                    "Error loading part ({}): {error:?}",
-                    &merge_data.part_1.name
-                );
-                error
-            })
-            .ok()?;
-
-        Some((part_0_cols, part_1_cols))
+        cols1
     }
 
     /// Atomically replaces old parts with the merged part.
@@ -173,28 +181,28 @@ impl BackgroundMerge {
     /// and cleans up old directories. Rolls back on failure.
     ///
     /// Returns: `true` on success, `false` on failure (with rollback attempted).
-    fn atomic_part_move(merge_data: MergeData, new_part: TablePart) -> bool {
+    fn atomic_part_move(parts_to_merge: PartsToMerge, new_part: TablePart) -> bool {
         // prevent from new selects
-        let Some(mut config) = TABLE_DATA.get_mut(&merge_data.table_def) else {
+        let Some(mut config) = TABLE_DATA.get_mut(&parts_to_merge.table_def) else {
             warn!("could not get mutable table config");
             return false;
         };
-        let part_0_old = merge_data
+        let part_0_old = parts_to_merge
             .table_def
             .get_path()
-            .join(&merge_data.part_0.name);
-        let part_0_new = merge_data
+            .join(&parts_to_merge.part_1_info.name);
+        let part_0_new = parts_to_merge
             .table_def
             .get_path()
-            .join(format!("{}.old", &merge_data.part_0.name));
-        let part_1_old = merge_data
+            .join(format!("{}.old", &parts_to_merge.part_1_info.name));
+        let part_1_old = parts_to_merge
             .table_def
             .get_path()
-            .join(&merge_data.part_1.name);
-        let part_1_new = merge_data
+            .join(&parts_to_merge.part_2_info.name);
+        let part_1_new = parts_to_merge
             .table_def
             .get_path()
-            .join(format!("{}.old", &merge_data.part_1.name));
+            .join(format!("{}.old", &parts_to_merge.part_2_info.name));
 
         if std::fs::rename(&part_0_old, &part_0_new).is_err() {
             warn!(
@@ -214,13 +222,15 @@ impl BackgroundMerge {
             }
             return false;
         }
-        config
-            .infos
-            .retain(|x| x.name != merge_data.part_0.name && x.name != merge_data.part_1.name);
-        drop(config); // drop mut access for `move_to_normal`
+        config.infos.retain(|x| {
+            x.name != parts_to_merge.part_1_info.name && x.name != parts_to_merge.part_2_info.name
+        });
 
-        if new_part.move_to_normal(&merge_data.table_def).is_err() {
-            let Some(mut config) = TABLE_DATA.get_mut(&merge_data.table_def) else {
+        if new_part
+            .move_to_normal(&parts_to_merge.table_def, &mut config.value_mut().infos)
+            .is_err()
+        {
+            let Some(mut config) = TABLE_DATA.get_mut(&parts_to_merge.table_def) else {
                 return false;
             };
             if let Err(error) = std::fs::rename(&part_0_new, &part_0_old) {
@@ -230,7 +240,7 @@ impl BackgroundMerge {
                     error
                 );
             } else {
-                config.infos.push(merge_data.part_0);
+                config.infos.push(parts_to_merge.part_1_info);
             }
             if let Err(error) = std::fs::rename(&part_1_new, &part_1_old) {
                 error!(
@@ -239,7 +249,7 @@ impl BackgroundMerge {
                     error
                 );
             } else {
-                config.infos.push(merge_data.part_1);
+                config.infos.push(parts_to_merge.part_2_info);
             }
             return false;
         }
@@ -262,52 +272,36 @@ impl BackgroundMerge {
     }
 }
 
-#[derive(Debug)]
-struct MergeData {
-    table_def: TableDef,
-    part_0: TablePartInfo,
-    part_1: TablePartInfo,
-}
-
-fn find_two_parts() -> Option<MergeData> {
-    let table = TABLE_DATA.iter().find(|x| x.infos.len() > 1)?;
-
-    let mut names: Vec<_> = table.infos.iter().map(|x| &x.name).collect();
-    names.sort_unstable_by(|a, b| uuid_str_cmp(a, b));
-
-    let part_0 = table.infos.iter().find(|x| x.name == *names[0])?;
-    let part_1 = table.infos.iter().find(|x| x.name == *names[1])?;
-
-    Some(MergeData {
-        table_def: table.pair().0.clone(),
-        part_0: part_0.clone(),
-        part_1: part_1.clone(),
-    })
-}
-
 /// Try to parse both UUIDs and compare their timestamps.
-/// If either fails, fall back to string comparison.
-fn uuid_str_cmp(t1: &str, t2: &str) -> std::cmp::Ordering {
+fn cmp_uuid_strs_asc(t1: &str, t2: &str) -> Ordering {
     if t1 == t2 {
-        return std::cmp::Ordering::Equal;
+        return Ordering::Equal;
     }
 
     // (seconds, subsec_nanos)
-    let t1_unix = Uuid::parse_str(t1)
+    let Some(t1_unix) = Uuid::parse_str(t1)
         .ok()
-        .and_then(|uuid| uuid.get_timestamp().map(|ts| ts.to_unix()));
-    let t2_unix = Uuid::parse_str(t2)
+        .and_then(|uuid| uuid.get_timestamp().map(|ts| ts.to_unix()))
+    else {
+        return Ordering::Equal;
+    };
+    let Some(t2_unix) = Uuid::parse_str(t2)
         .ok()
-        .and_then(|uuid| uuid.get_timestamp().map(|ts| ts.to_unix()));
+        .and_then(|uuid| uuid.get_timestamp().map(|ts| ts.to_unix()))
+    else {
+        return Ordering::Equal;
+    };
 
-    match (t1_unix, t2_unix) {
-        (Some(t1_unix), Some(t2_unix)) => {
-            if (t1_unix.0 > t2_unix.0) || (t1_unix.0 == t2_unix.0 && t1_unix.1 > t2_unix.1) {
-                std::cmp::Ordering::Greater
-            } else {
-                std::cmp::Ordering::Less
-            }
-        }
-        _ => t1.cmp(t2),
+    if (t1_unix.0 > t2_unix.0) || (t1_unix.0 == t2_unix.0 && t1_unix.1 > t2_unix.1) {
+        Ordering::Greater
+    } else {
+        Ordering::Less
     }
+}
+
+struct PartsToMerge {
+    table_def: TableDef,
+    table_metadata: TableMetadata,
+    part_1_info: TablePartInfo,
+    part_2_info: TablePartInfo,
 }

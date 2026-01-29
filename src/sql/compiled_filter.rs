@@ -1,6 +1,5 @@
 use crate::error::{Error, Result};
-use crate::storage::{ColumnDef, Mark, Value, ValueType, value::ArchivedValue};
-use rkyv::vec::ArchivedVec;
+use crate::storage::{ColumnDef, ToValue, Value, ValueType};
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value as SQLValue};
 
 pub enum BinOp {
@@ -64,26 +63,6 @@ impl CompiledFilter {
         }
     }
 
-    /// Allow cmp for
-    /// * `Value` and `Value`
-    /// * `Value` and `ArchivedValue`
-    /// * `ArchivedValue` and `Value`
-    /// * `ArchivedValue` and `ArchivedValue`
-    pub fn cmp_vals<T, K>(a: &T, b: &K, op: &BinOp) -> bool
-    where
-        T: PartialEq<K> + PartialOrd<K> + PartialEq + PartialOrd,
-        K: PartialEq<T> + PartialOrd<T> + PartialEq + PartialOrd,
-    {
-        match op {
-            BinOp::Gt => a > b,
-            BinOp::Lt => a < b,
-            BinOp::GtEq => a >= b,
-            BinOp::LtEq => a <= b,
-            BinOp::Eq => a == b,
-            BinOp::NotEq => a != b,
-        }
-    }
-
     /// Compiles a SQL expression into a `CompiledFilter` for efficient evaluation.
     ///
     /// Supports: AND, OR, NOT, comparison operators, column references, and literal values.
@@ -95,20 +74,20 @@ impl CompiledFilter {
     ///     1. Column not found in table: `ColumnNotFound`.
     ///     2. Unsupported expression type: `UnsupportedFilter` or `InvalidSource`.
     ///     3. Value conversion fails: type conversion error.
-    pub fn try_compile(filter: Expr, table_column_defs: &[ColumnDef]) -> Result<Self> {
+    pub fn compile(filter: Expr, table_column_defs: &[ColumnDef]) -> Result<Self> {
         match filter {
             Expr::BinaryOp { op, left, right } => match op {
                 BinaryOperator::And => {
-                    let left = Self::try_compile(*left, table_column_defs)?;
+                    let left = Self::compile(*left, table_column_defs)?;
 
                     if let Self::Const(false) = left {
                         return Ok(Self::Const(false));
                     }
                     if let Self::Const(true) = left {
-                        return Self::try_compile(*right, table_column_defs);
+                        return Self::compile(*right, table_column_defs);
                     }
 
-                    let right = Self::try_compile(*right, table_column_defs)?;
+                    let right = Self::compile(*right, table_column_defs)?;
 
                     if let Self::Const(false) = right {
                         return Ok(Self::Const(false));
@@ -120,16 +99,16 @@ impl CompiledFilter {
                     Ok(Self::And(Box::new(left), Box::new(right)))
                 }
                 BinaryOperator::Or => {
-                    let left = Self::try_compile(*left, table_column_defs)?;
+                    let left = Self::compile(*left, table_column_defs)?;
 
                     if let Self::Const(true) = left {
                         return Ok(Self::Const(true));
                     }
                     if let Self::Const(false) = left {
-                        return Self::try_compile(*right, table_column_defs);
+                        return Self::compile(*right, table_column_defs);
                     }
 
-                    let right = Self::try_compile(*right, table_column_defs)?;
+                    let right = Self::compile(*right, table_column_defs)?;
 
                     if let Self::Const(true) = right {
                         return Ok(Self::Const(true));
@@ -179,7 +158,7 @@ impl CompiledFilter {
                             let left = Value::try_from_untyped(left.value)?;
                             let right = Value::try_from_untyped(right.value)?;
 
-                            Ok(Self::Const(Self::cmp_vals(&left, &right, &op)))
+                            Ok(Self::Const(left.fits_op(&right, &op)))
                         }
                         (Expr::Identifier(left), Expr::Identifier(right)) => {
                             let left_idx = table_column_defs
@@ -204,7 +183,10 @@ impl CompiledFilter {
             },
             Expr::UnaryOp { op, expr } => {
                 if let UnaryOperator::Not = op {
-                    Ok(Self::try_compile(*expr, table_column_defs)?.invert_self())
+                    Ok(Self::Not(Box::new(Self::compile(
+                        *expr,
+                        table_column_defs,
+                    )?))) // todo: create .flip to flip without additional Not
                 } else {
                     Err(Error::InvalidSource(
                         "Currently do not support filters with unary operators except NOT"
@@ -241,270 +223,81 @@ impl CompiledFilter {
             ))),
         }
     }
+    pub fn filter_granule<T: ToValue>(&self, columns: &mut Vec<Vec<T>>) -> Result<()> {
+        let mask = self.get_granule_mask(columns)?;
 
-    pub fn invert_self(self) -> Self {
-        match self {
-            CompiledFilter::Column(col_idx) => {
-                CompiledFilter::Not(Box::new(CompiledFilter::Column(col_idx)))
-            }
-            CompiledFilter::Compare { col_idx, op, value } => CompiledFilter::Compare {
-                col_idx,
-                op: op.flip(),
-                value,
-            },
-            CompiledFilter::CompareColumns {
-                left_idx,
-                op,
-                right_idx,
-            } => CompiledFilter::CompareColumns {
-                left_idx,
-                op: op.flip(),
-                right_idx,
-            },
-            CompiledFilter::Not(inner) => *inner,
-            CompiledFilter::And(left, right) => {
-                CompiledFilter::Or(Box::new(left.invert_self()), Box::new(right.invert_self()))
-            }
-            CompiledFilter::Or(left, right) => {
-                CompiledFilter::And(Box::new(left.invert_self()), Box::new(right.invert_self()))
-            }
-            CompiledFilter::Const(val) => CompiledFilter::Const(!val),
+        for column in columns {
+            let mut idx = 0;
+            column.retain(|_| {
+                let flag = mask[idx];
+                idx += 1;
+                flag
+            });
         }
+
+        Ok(())
     }
 
-    // todo: currently, because of most defined types, compiler struggles to vectorize comparison.
-    // it's better to split them into (cmp_i32, cmp_u8s, ...) - vectorizable
-    // and (cmp_strings, cmp_uuids, ...) - not vectorizable
-    pub fn generate_mask(
-        &self,
-        granule_bytes: &[Option<Vec<u8>>],
-        col_mapping: &[Option<usize>],
-        row_count: usize,
-    ) -> Vec<bool> {
+    fn get_granule_mask<T: ToValue>(&self, columns: &[Vec<T>]) -> Result<Vec<bool>> {
+        let mut mask = Vec::with_capacity(columns.first().map(|x| x.len()).unwrap_or(0));
+
         match self {
-            CompiledFilter::CompareColumns { .. } => unimplemented!(),
-
-            CompiledFilter::Compare { col_idx, op, value } => {
-                if let Some(data_idx) = col_mapping[*col_idx]
-                    && let Some(col_data) = &granule_bytes[data_idx]
-                {
-                    let values =
-                        unsafe { rkyv::access_unchecked::<ArchivedVec<ArchivedValue>>(col_data) };
-                    values
-                        .iter()
-                        .map(|row_value| CompiledFilter::cmp_vals(row_value, value, op))
-                        .collect()
-                } else {
-                    vec![false; row_count]
-                }
-            }
-            CompiledFilter::And(left, right) => {
-                let left_mask = Self::generate_mask(left, granule_bytes, col_mapping, row_count);
-                let right_mask = Self::generate_mask(right, granule_bytes, col_mapping, row_count);
-
-                left_mask
-                    .into_iter()
-                    .zip(right_mask)
-                    .map(|(l, r)| l && r)
-                    .collect()
-            }
-            CompiledFilter::Or(left, right) => {
-                let left_mask = Self::generate_mask(left, granule_bytes, col_mapping, row_count);
-                let right_mask = Self::generate_mask(right, granule_bytes, col_mapping, row_count);
-
-                left_mask
-                    .into_iter()
-                    .zip(right_mask)
-                    .map(|(l, r)| l || r)
-                    .collect()
-            }
-            CompiledFilter::Not(inner) => {
-                let mask = Self::generate_mask(inner, granule_bytes, col_mapping, row_count);
-
-                mask.into_iter().map(|b| !b).collect()
-            }
-            CompiledFilter::Column(col_idx) => {
-                if let Some(data_idx) = col_mapping[*col_idx]
-                    && let Some(col_data) = &granule_bytes[data_idx]
-                {
-                    let values =
-                        unsafe { rkyv::access_unchecked::<ArchivedVec<ArchivedValue>>(col_data) };
-
-                    values
-                        .iter()
-                        .map(|value| {
-                            if let ArchivedValue::Bool(value) = value
-                                && *value
-                            {
-                                true
-                            } else {
-                                false
-                            }
-                        })
-                        .collect()
-                } else {
-                    vec![false; row_count]
-                }
-            }
-            CompiledFilter::Const(value) => vec![*value; row_count],
-        }
-    }
-
-    pub fn get_col_defs_inside<'a>(&self, table_col_defs: &'a [ColumnDef]) -> Vec<&'a ColumnDef> {
-        let mut columns_to_filter = Vec::new();
-
-        self.get_column_indexes(&mut columns_to_filter);
-
-        columns_to_filter
-            .into_iter()
-            .map(|col_idx| &table_col_defs[col_idx])
-            .collect()
-    }
-
-    pub fn filter_marks(
-        &self,
-        marks: &[Mark],
-        use_filter_optimization: bool,
-        pk_col_defs: &[ColumnDef],
-        table_col_defs: &[ColumnDef],
-    ) -> Vec<usize> {
-        if use_filter_optimization {
-            self.filter_marks_impl(marks, pk_col_defs, table_col_defs)
-        } else {
-            (0..marks.len()).collect()
-        }
-    }
-
-    // todo: remove this fn...
-    fn find_values<'a>(
-        marks: &'a [Mark],
-        pk_col_defs: &[ColumnDef],
-        col_def: &ColumnDef,
-    ) -> Vec<&'a Value> {
-        let idx = pk_col_defs
-            .iter()
-            .position(|pk_col_def| pk_col_def == col_def);
-
-        marks
-            .iter()
-            .map(|mark| {
-                if let Some(idx) = idx {
-                    &mark.index[idx]
-                } else {
-                    &Value::Null
-                }
-            })
-            .collect()
-    }
-
-    fn filter_marks_impl(
-        &self,
-        marks: &[Mark],
-        pk_col_defs: &[ColumnDef],
-        table_col_defs: &[ColumnDef],
-    ) -> Vec<usize> {
-        match self {
-            CompiledFilter::Compare { col_idx, op, value } => {
-                let values = Self::find_values(marks, pk_col_defs, &table_col_defs[*col_idx]);
-
-                match *op {
-                    BinOp::Eq => {
-                        let start = values.partition_point(|&v| v < value);
-                        let start = start.saturating_sub(1);
-                        let end = values.partition_point(|&v| v <= value);
-                        (start..end).collect()
-                    }
-                    BinOp::NotEq => (0..marks.len()).collect(), // cannot determine if it's present without reading
-                    BinOp::Lt => {
-                        let end = values.partition_point(|&v| v < value);
-                        (0..end).collect()
-                    }
-                    BinOp::LtEq => {
-                        let end = values.partition_point(|&v| v <= value);
-                        (0..end).collect()
-                    }
-                    BinOp::Gt => {
-                        let start = values.partition_point(|&v| v <= value);
-                        let start = start.saturating_sub(1);
-                        (start..marks.len()).collect()
-                    }
-                    BinOp::GtEq => {
-                        let start = values.partition_point(|&v| v < value);
-                        let start = start.saturating_sub(1);
-                        (start..marks.len()).collect()
+            Self::Column(col_idx) => {
+                for val in &columns[*col_idx] {
+                    if val.is_true() {
+                        mask.push(true);
+                    } else {
+                        mask.push(false);
                     }
                 }
             }
-            CompiledFilter::CompareColumns {
+            Self::Compare { col_idx, op, value } => {
+                for left in &columns[*col_idx] {
+                    mask.push(left.fits_op(value, op))
+                }
+            }
+            Self::CompareColumns {
                 left_idx,
                 op,
                 right_idx,
             } => {
-                let left_values = Self::find_values(marks, pk_col_defs, &table_col_defs[*left_idx]);
-                let right_values =
-                    Self::find_values(marks, pk_col_defs, &table_col_defs[*right_idx]);
+                let left_vals = &columns[*left_idx];
+                let right_vals = &columns[*right_idx];
 
-                left_values
-                    .into_iter()
-                    .zip(right_values)
-                    .enumerate()
-                    .filter_map(|(idx, (a, b))| {
-                        if CompiledFilter::cmp_vals(a, b, op) {
-                            Some(idx)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            }
-            CompiledFilter::Or(a, b) => {
-                let mut left = a.filter_marks_impl(marks, pk_col_defs, table_col_defs);
-                let right = b.filter_marks_impl(marks, pk_col_defs, table_col_defs);
-
-                for i in right {
-                    if !left.contains(&i) {
-                        left.push(i);
-                    }
-                }
-
-                left
-            }
-            CompiledFilter::And(a, b) => {
-                let mut left = a.filter_marks_impl(marks, pk_col_defs, table_col_defs);
-                let right = b.filter_marks_impl(marks, pk_col_defs, table_col_defs);
-
-                left.retain(|idx| right.contains(idx));
-                left
-            }
-            CompiledFilter::Not(inner) => {
-                let result = inner.filter_marks_impl(marks, pk_col_defs, table_col_defs);
-                (0..marks.len()).filter(|x| !result.contains(x)).collect()
-            }
-            CompiledFilter::Const(value) => {
-                if *value {
-                    (0..marks.len()).collect()
-                } else {
-                    Vec::new()
+                for (l, r) in left_vals.iter().zip(right_vals) {
+                    mask.push(l.fits_op(r, op))
                 }
             }
-            CompiledFilter::Column(col_idx) => {
-                let left_values = Self::find_values(marks, pk_col_defs, &table_col_defs[*col_idx]);
+            Self::And(l, r) => {
+                let left = l.get_granule_mask(columns)?;
+                let right = r.get_granule_mask(columns)?;
 
-                left_values
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, &value)| {
-                        if let Value::Bool(val) = value
-                            && *val
-                        {
-                            Some(idx)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
+                for (l, r) in left.into_iter().zip(right) {
+                    mask.push(l && r);
+                }
             }
-        }
+            Self::Or(l, r) => {
+                let left = l.get_granule_mask(columns)?;
+                let right = r.get_granule_mask(columns)?;
+
+                for (l, r) in left.into_iter().zip(right) {
+                    mask.push(l || r);
+                }
+            }
+            Self::Not(inner) => {
+                let inner = inner.get_granule_mask(columns)?;
+
+                for val in inner {
+                    mask.push(!val);
+                }
+            }
+            Self::Const(val) => {
+                let length = columns.first().map(|x| x.len()).unwrap_or(0);
+                mask.extend(vec![*val; length]);
+            }
+        };
+
+        Ok(mask)
     }
 }
 

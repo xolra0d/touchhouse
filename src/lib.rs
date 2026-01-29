@@ -1,4 +1,4 @@
-mod background_merge;
+// mod background_merge;
 mod config;
 mod engines;
 mod error;
@@ -14,7 +14,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio_util::codec::Decoder as _;
 
-use crate::background_merge::BackgroundMerge;
+// use crate::background_merge::BackgroundMerge;
 use crate::config::CONFIG;
 use crate::error::Error;
 use crate::runtime_config::{TABLE_DATA, TableConfig};
@@ -22,33 +22,19 @@ use crate::sql::CommandRunner;
 use crate::storage::{TableDef, TableMetadata, TablePartInfo};
 use crate::tcp_io_parser::Parser;
 
-pub fn reject_32bit_systems() -> Result<(), String> {
-    if size_of::<usize>() == size_of::<u32>() {
-        Err(format!(
-            "32bit systems are not supported, as they are not optimal for OLAP workloads (where the number of rows could exceed easily exceed {}).",
-            u32::MAX
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 pub fn build_logger() {
     env_logger::Builder::from_default_env()
         .filter_level(CONFIG.get_log_level())
         .init();
 }
-
 pub fn spawn_background_merges() {
     std::thread::spawn(|| {
-        BackgroundMerge::start();
+        // BackgroundMerge::start();
     });
 }
-
 pub fn init_conn_semaphore() -> Arc<Semaphore> {
     Arc::new(Semaphore::new(CONFIG.get_max_connections()))
 }
-
 pub async fn init_listener() -> Result<TcpListener, String> {
     TcpListener::bind(&CONFIG.get_tcp_socket_addr())
         .await
@@ -105,23 +91,12 @@ async fn handle_connection(socket: &mut TcpStream) -> Result<(), Error> {
             break;
         }
 
-        let output = tokio::task::spawn_blocking(move || {
-            let start = std::time::Instant::now();
-            let output_table = CommandRunner::execute_command(&value);
-            let elapsed = start.elapsed();
-
-            output_table.map(|mut x| {
-                x.execution_time = elapsed;
-                x
-            })
-        })
-        .await
-        .unwrap_or_else(|error| {
-            error!("SQL task panicked: {error}");
-            Err(Error::Internal(
-                "Internal error during query execution".to_string(),
-            ))
-        });
+        let output = tokio::task::spawn_blocking(move || CommandRunner::execute_command(&value))
+            .await
+            .unwrap_or_else(|error| {
+                error!("Thread panicked: {error}");
+                Err(Error::Internal(format!("Thread panicked: {error}")))
+            });
 
         if let Err(send_error) = transport.send(output).await {
             error!("Failed to send response: {send_error}");

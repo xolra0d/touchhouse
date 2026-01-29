@@ -1,0 +1,20 @@
+# Storage directory
+storage_directory = "db_files/"
+
+# TCP socket to accept connections
+tcp_socket = "127.0.0.1:7070"
+
+# Max connection at a time
+max_concurrent_connections = 100
+
+# Allowed values:
+# - 1 => Info
+# - 2 => Warn
+# - 3 => Error
+log_level = 1
+
+# Signifies when database can do background merges of parts, depending on database load
+background_merge_available_under = 5
+
+# Number of tasks per thread
+tasks_per_thread = 10

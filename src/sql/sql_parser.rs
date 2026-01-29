@@ -1,21 +1,21 @@
+use log::error;
 use serde::Serialize;
 use sqlparser::ast::{
-    BinaryOperator, Expr, Function as SQLFunction, FunctionArg, FunctionArgExpr, FunctionArguments,
-    Ident, ObjectNamePart, Statement,
+    Expr, Function as SQLFunction, FunctionArg, FunctionArgExpr, FunctionArguments, Ident,
+    ObjectNamePart, Statement,
 };
 use sqlparser::dialect::ClickHouseDialect;
 use sqlparser::parser::Parser;
 use std::fmt;
 
 use crate::error::{Error, Result};
-use crate::storage::table_metadata::TableSettings;
-use crate::storage::{ColumnDef, PhysicalColumn, TableDef, Value};
+use crate::storage::{ColumnDef, PhysicalColumn, TableDef, TableSettings, Value, ValueType};
 
 /// Source for a Scan operation
 #[derive(Debug, Clone, PartialEq)]
-pub enum ScanSource {
+pub enum ScanSource<Plan> {
     Table(TableDef),
-    Subquery(Box<LogicalPlan>),
+    Subquery(Box<Plan>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -29,6 +29,13 @@ impl ProjectionValue {
         match self {
             ProjectionValue::ColumnDef(col_def) => Some(col_def),
             ProjectionValue::Value(_) => None,
+        }
+    }
+
+    pub fn get_field_type(&self) -> ValueType {
+        match self {
+            ProjectionValue::Value(value) => value.get_type(),
+            ProjectionValue::ColumnDef(col_def) => col_def.field_type.clone(),
         }
     }
 }
@@ -61,15 +68,21 @@ impl Projection {
     }
 }
 
+impl fmt::Display for ProjectionValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), fmt::Error> {
+        match &self {
+            Self::Value(value) => write!(f, "{value:?}"),
+            Self::ColumnDef(col_def) => write!(f, "{}", col_def.name),
+        }
+    }
+}
+
 impl fmt::Display for Projection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), fmt::Error> {
         if let Some(alias) = &self.alias {
             return write!(f, "{alias}");
         }
-        match &self.source {
-            ProjectionValue::Value(value) => write!(f, "{value:?}"),
-            ProjectionValue::ColumnDef(col_def) => write!(f, "{}", col_def.name),
-        }
+        self.source.fmt(f)
     }
 }
 
@@ -182,7 +195,7 @@ impl AggregateFunction {
                     let argument = match arg {
                         FunctionArg::Unnamed(arg_expr) => match arg_expr {
                             FunctionArgExpr::Expr(expr) => {
-                                match RawProjection::try_from(expr, &available_projections)? {
+                                match RawProjection::try_from(expr, available_projections)? {
                                     RawProjection::Projection(proj) => proj,
                                     RawProjection::AggregateProjection(aggr_proj) => {
                                         return Err(Error::InvalidSource(format!(
@@ -253,24 +266,23 @@ impl RawProjection {
         match self {
             Self::Projection(proj) => proj.alias = Some(alias),
             Self::AggregateProjection(proj) => proj.alias = Some(alias),
-        };
+        }
     }
 }
 
 /// High level representation of the SQL query.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalPlan {
-    /// No tasks need to be done. Skip.
-    Skip,
-
     /// Create a database.
     CreateDatabase {
         name: String,
+        if_not_exists: bool,
     },
 
     /// Create a table.
     CreateTable {
         name: TableDef,
+        if_not_exists: bool,
         columns: Vec<ColumnDef>,
         settings: TableSettings,
         order_by: Vec<ColumnDef>,
@@ -294,11 +306,11 @@ pub enum LogicalPlan {
     },
 
     Scan {
-        source: ScanSource,
+        source: ScanSource<LogicalPlan>,
     },
 
     Projection {
-        columns: Vec<Projection>,
+        projs: Vec<Projection>,
         plan: Box<LogicalPlan>,
     },
 
@@ -374,17 +386,16 @@ impl TryFrom<&str> for LogicalPlan {
 /// Lower level representation of the Logical Plan.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalPlan {
-    /// No tasks need to be done. Skip.
-    Skip,
-
     /// Create a database.
     CreateDatabase {
         name: String,
+        if_not_exists: bool,
     },
 
     /// Create a table.
     CreateTable {
         name: TableDef,
+        if_not_exists: bool,
         columns: Vec<ColumnDef>,
         settings: TableSettings,
         order_by: Vec<ColumnDef>,
@@ -408,114 +419,143 @@ pub enum PhysicalPlan {
     },
 
     /// Select columns from table.
-    Select {
-        scan_source: ScanSource,
-        columns: Vec<Projection>,
-        filter: Option<Box<Expr>>,
-        aggregate_cols: Vec<AggregateProjection>,
-        group_by: Vec<Projection>,
-        having: Option<Box<Expr>>,
-        sort_by: Option<Vec<Vec<Projection>>>,
-        limit: Option<usize>,
-        offset: usize,
-    },
+    Select(SelectNode),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectNode {
+    pub scan_source: ScanSource<SelectNode>,
+    pub columns: Vec<Projection>,
+    pub filter: Option<Box<Expr>>,
+    pub aggregate_cols: Vec<AggregateProjection>,
+    pub group_by: Vec<Projection>,
+    pub having: Option<Box<Expr>>,
+    pub order_by: Option<Vec<Vec<Projection>>>,
+    pub limit: Option<usize>,
+    pub offset: usize,
+}
+
+impl TryFrom<LogicalPlan> for SelectNode {
+    type Error = Error;
+    fn try_from(mut current_plan: LogicalPlan) -> Result<Self> {
+        let mut columns = Vec::new();
+        let mut filter = None;
+        let mut aggregate_cols = Vec::new();
+        let mut group_by = Vec::new();
+        let mut having = None;
+        let mut order_by = None;
+        let mut limit = None;
+        let mut offset = 0;
+
+        loop {
+            match current_plan {
+                LogicalPlan::Scan { source } => {
+                    let inner = match source {
+                        ScanSource::Table(table_def) => ScanSource::Table(table_def),
+                        ScanSource::Subquery(plan) => {
+                            ScanSource::Subquery(Box::new(SelectNode::try_from(*plan)?))
+                        }
+                    };
+
+                    return Ok(SelectNode {
+                        scan_source: inner,
+                        columns,
+                        filter,
+                        aggregate_cols,
+                        group_by,
+                        having,
+                        order_by,
+                        limit,
+                        offset,
+                    });
+                }
+                LogicalPlan::Projection { projs, plan } => {
+                    columns = projs;
+                    current_plan = *plan;
+                }
+                LogicalPlan::Filter { expr, plan } => {
+                    filter = Some(expr);
+                    current_plan = *plan;
+                }
+                LogicalPlan::OrderBy { projs, plan } => {
+                    order_by = Some(projs);
+                    current_plan = *plan;
+                }
+                LogicalPlan::Limit {
+                    limit: limit_inner,
+                    offset: offset_inner,
+                    plan,
+                } => {
+                    limit = limit_inner;
+                    offset = offset_inner;
+                    current_plan = *plan;
+                }
+                LogicalPlan::Aggregate {
+                    aggr_proj,
+                    group_by: group_by_inner,
+                    plan,
+                } => {
+                    aggregate_cols = aggr_proj;
+                    group_by = group_by_inner;
+                    current_plan = *plan;
+                }
+                LogicalPlan::Having { expr, plan } => {
+                    having = Some(expr);
+                    current_plan = *plan;
+                }
+                LogicalPlan::CreateDatabase { .. }
+                | LogicalPlan::CreateTable { .. }
+                | LogicalPlan::Insert { .. }
+                | LogicalPlan::DropDatabase { .. }
+                | LogicalPlan::DropTable { .. } => {
+                    error!("Unexpected logical node: {current_plan:?}");
+                    return Err(Error::Internal(format!(
+                        "Unexpected logical node: {current_plan:?}"
+                    )));
+                }
+            }
+        }
+    }
 }
 
 impl TryFrom<LogicalPlan> for PhysicalPlan {
     type Error = Error;
     fn try_from(plan: LogicalPlan) -> Result<Self> {
         match plan {
-            LogicalPlan::Skip => Ok(Self::Skip),
-            LogicalPlan::CreateDatabase { name } => Self::CreateDatabase { name },
+            LogicalPlan::CreateDatabase {
+                name,
+                if_not_exists,
+            } => Ok(Self::CreateDatabase {
+                name,
+                if_not_exists,
+            }),
             LogicalPlan::CreateTable {
                 name,
+                if_not_exists,
                 columns,
                 settings,
                 order_by,
                 primary_key,
-            } => Self::CreateTable {
+            } => Ok(Self::CreateTable {
                 name,
+                if_not_exists,
                 columns,
                 settings,
                 order_by,
                 primary_key,
-            },
-            LogicalPlan::Insert { table_def, columns } => Self::Insert { table_def, columns },
-            LogicalPlan::DropDatabase { name, if_exists } => Self::DropDatabase { name, if_exists },
-            LogicalPlan::DropTable { name, if_exists } => Self::DropTable { name, if_exists },
-
-            LogicalPlan::Scan { source } => Self::Select {
-                scan_source: source,
-                columns: Vec::new(),
-                filter: None,
-                aggregate_cols: Vec::new(),
-                group_by: Vec::new(),
-                having: None,
-                sort_by: None,
-                limit: None,
-                offset: 0,
-            },
-            plan @ (LogicalPlan::Projection { .. }
+            }),
+            LogicalPlan::Insert { table_def, columns } => Ok(Self::Insert { table_def, columns }),
+            LogicalPlan::DropDatabase { name, if_exists } => {
+                Ok(Self::DropDatabase { name, if_exists })
+            }
+            LogicalPlan::DropTable { name, if_exists } => Ok(Self::DropTable { name, if_exists }),
+            LogicalPlan::Scan { .. }
+            | LogicalPlan::Projection { .. }
             | LogicalPlan::Filter { .. }
             | LogicalPlan::OrderBy { .. }
-            | LogicalPlan::Limit { .. }) => {
-                let mut current = plan;
-                let mut columns = None;
-                let mut filter = None;
-                let mut sort_by = None;
-                let mut limit = None;
-                let mut offset = 0;
-
-                loop {
-                    match current {
-                        LogicalPlan::Limit {
-                            limit: limit_val,
-                            offset: offset_val,
-                            plan: inner,
-                        } => {
-                            limit = limit_val;
-                            offset = offset_val;
-                            current = *inner;
-                        }
-                        LogicalPlan::OrderBy {
-                            column_defs,
-                            plan: inner,
-                        } => {
-                            sort_by = Some(column_defs);
-                            current = *inner;
-                        }
-                        LogicalPlan::Projection {
-                            columns: cols,
-                            plan: inner,
-                        } => {
-                            columns = Some(cols);
-                            current = *inner;
-                        }
-                        LogicalPlan::Filter { expr, plan: inner } => {
-                            filter = match filter {
-                                None => Some(expr),
-                                Some(value) => Some(Box::new(Expr::BinaryOp {
-                                    left: value,
-                                    op: BinaryOperator::And,
-                                    right: expr,
-                                })),
-                            };
-                            current = *inner;
-                        }
-                        LogicalPlan::Scan { source } => {
-                            return Self::Select {
-                                scan_source: source,
-                                columns: columns.unwrap_or_default(),
-                                filter,
-                                sort_by,
-                                limit,
-                                offset,
-                            };
-                        }
-                        unexpected => unreachable!("Unexpected plan node in query: {unexpected:?}"),
-                    }
-                }
-            }
+            | LogicalPlan::Limit { .. }
+            | LogicalPlan::Aggregate { .. }
+            | LogicalPlan::Having { .. } => Ok(Self::Select(SelectNode::try_from(plan)?)),
         }
     }
 }
@@ -523,7 +563,6 @@ impl TryFrom<LogicalPlan> for PhysicalPlan {
 impl PhysicalPlan {
     pub fn get_complexity(&self) -> usize {
         match self {
-            PhysicalPlan::Skip => 0,
             PhysicalPlan::CreateDatabase { .. }
             | PhysicalPlan::CreateTable { .. }
             | PhysicalPlan::DropDatabase { .. }

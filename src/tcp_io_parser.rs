@@ -10,7 +10,7 @@ use std::fmt;
 use tokio_util::bytes::{Buf, BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::sql::OutputTable;
+use crate::storage::OutputTable;
 
 type HeaderType = u64;
 const HEADER_SIZE: usize = size_of::<HeaderType>();

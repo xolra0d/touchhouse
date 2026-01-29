@@ -1,7 +1,7 @@
 use crate::engines::{Engine, EngineConfig};
 use crate::error::{Error, Result};
-use crate::sql::{OutputColumn, Projection, ProjectionValue};
-use crate::storage::ColumnDef;
+use crate::sql::{Projection, ProjectionValue};
+use crate::storage::{ColumnDef, OutputColumn};
 use std::cmp::Ordering;
 
 /// Engine for editing rows. Sorts values in ASC order.

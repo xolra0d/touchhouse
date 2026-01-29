@@ -1,11 +1,13 @@
 use crate::engines::EngineName;
 use crate::error::{Error, Result};
-use crate::storage::{ColumnDef, TableDef, get_unix_time};
+use crate::storage::{ColumnDef, TableDef};
+use std::time::SystemTime;
 
 use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 
 pub const TABLE_METADATA_MAGIC_BYTES: &[u8] = b"THMETA".as_slice();
 pub const TABLE_METADATA_FILENAME: &str = ".metadata";
+pub const STANDARD_GRANULARITY: usize = 8192;
 
 const VERSION: u16 = 1;
 
@@ -30,7 +32,7 @@ pub struct TableSettings {
 impl Default for TableSettings {
     fn default() -> Self {
         TableSettings {
-            index_granularity: 8192,
+            index_granularity: STANDARD_GRANULARITY as u32,
             engine: EngineName::MergeTree,
         }
     }
@@ -135,4 +137,17 @@ impl TableMetadata {
             Error::CouldNotReadData(format!("Failed to deserialize table metadata: {error}"))
         })
     }
+}
+
+/// Returns current Unix timestamp in milliseconds.
+///
+/// Returns: u64 timestamp or `SystemTimeWentBackword` error
+fn get_unix_time() -> Result<u64> {
+    let now: SystemTime = SystemTime::now();
+    u64::try_from(
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| Error::SystemTimeWentBackword)?
+            .as_millis(),
+    )
+    .map_err(|_| Error::SystemTimeWentBackword)
 }

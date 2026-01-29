@@ -2,7 +2,7 @@ use sqlparser::ast::{Expr, Insert, SetExpr, TableObject, UnaryOperator, Value as
 
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
-use crate::sql::sql_parser::LogicalPlan;
+use crate::sql::LogicalPlan;
 use crate::storage::{PhysicalColumn, TableDef, Value};
 
 impl LogicalPlan {
@@ -17,7 +17,7 @@ impl LogicalPlan {
     ///   * Ok: `LogicalPlan::Insert` with validated columns and data
     ///   * Error: `TableNotFound`, `InvalidColumnName`, `InvalidColumnsSpecified`, `InvalidSource`, or `EmptySource`
     pub fn from_insert(insert: &Insert) -> Result<Self> {
-        let TableObject::TableName(ref table) = insert.table else {
+        let TableObject::TableName(table) = &insert.table else {
             return Err(Error::UnsupportedCommand(
                 "Currently not supporting table functions".to_string(),
             ));

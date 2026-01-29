@@ -1,14 +1,72 @@
-use crate::error::{Error, Result};
+use crate::{
+    error::{Error, Result},
+    sql::BinOp,
+};
 
-use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+use rkyv::{
+    Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize, rancor,
+};
 use serde::Serialize;
 use sqlparser::ast::{DataType as SQLDatatype, Value as SQLValue};
 use std::cmp::Ordering;
 use uuid::Uuid;
 
+pub trait ToValue: PartialEq<Value> + PartialOrd<Value> + PartialEq + PartialOrd + Clone {
+    fn to_value(self) -> Result<Value>;
+    fn is_true(&self) -> bool;
+
+    fn fits_op<T: ToValue>(&self, val: &T, op: &BinOp) -> bool
+    where
+        Self: PartialOrd<T>,
+    {
+        match op {
+            BinOp::Gt => self > val,
+            BinOp::GtEq => self >= val,
+            BinOp::Lt => self < val,
+            BinOp::LtEq => self <= val,
+            BinOp::Eq => self == val,
+            BinOp::NotEq => self != val,
+        }
+    }
+}
+
+impl ToValue for Value {
+    fn to_value(self) -> Result<Value> {
+        Ok(self)
+    }
+
+    fn is_true(&self) -> bool {
+        if let Value::Bool(val) = self
+            && *val
+        {
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl ToValue for &ArchivedValue {
+    fn to_value(self) -> Result<Value> {
+        rkyv::deserialize::<Value, rancor::Error>(self).map_err(|error| {
+            Error::CouldNotReadData(format!("Could not deserialize value ({self:?}): {error}"))
+        })
+    }
+
+    fn is_true(&self) -> bool {
+        if let ArchivedValue::Bool(val) = self
+            && *val
+        {
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Represents a parsed value in our custom protocol
 #[derive(
-    Clone, Debug, PartialEq, Default, Serialize, RkyvSerialize, RkyvArchive, RkyvDeserialize,
+    Clone, Debug, Default, PartialEq, Serialize, RkyvSerialize, RkyvArchive, RkyvDeserialize,
 )]
 #[rkyv(derive(Debug), compare(PartialEq))]
 pub enum Value {
@@ -203,22 +261,42 @@ impl PartialOrd<ArchivedValue> for Value {
     }
 }
 
-impl PartialOrd<Value> for ArchivedValue {
+impl PartialOrd<Value> for &ArchivedValue {
     fn partial_cmp(&self, rhs: &Value) -> Option<Ordering> {
         match (self, rhs) {
-            (Self::Null, Value::Null) => Some(Ordering::Equal),
-            (Self::String(l), Value::String(r)) => l.partial_cmp(r),
-            (Self::Uuid(l), Value::Uuid(r)) => l.partial_cmp(r),
-            (Self::Bool(l), Value::Bool(r)) => l.partial_cmp(r),
-            (Self::Int8(l), Value::Int8(r)) => l.partial_cmp(r),
-            (Self::Int16(l), Value::Int16(r)) => l.to_native().partial_cmp(r),
-            (Self::Int32(l), Value::Int32(r)) => l.to_native().partial_cmp(r),
-            (Self::Int64(l), Value::Int64(r)) => l.to_native().partial_cmp(r),
-            (Self::UInt8(l), Value::UInt8(r)) => l.partial_cmp(r),
-            (Self::UInt16(l), Value::UInt16(r)) => l.to_native().partial_cmp(r),
-            (Self::UInt32(l), Value::UInt32(r)) => l.to_native().partial_cmp(r),
-            (Self::UInt64(l), Value::UInt64(r)) => l.to_native().partial_cmp(r),
+            (ArchivedValue::Null, Value::Null) => Some(Ordering::Equal),
+            (ArchivedValue::String(l), Value::String(r)) => l.partial_cmp(r),
+            (ArchivedValue::Uuid(l), Value::Uuid(r)) => l.partial_cmp(r),
+            (ArchivedValue::Bool(l), Value::Bool(r)) => l.partial_cmp(r),
+            (ArchivedValue::Int8(l), Value::Int8(r)) => l.partial_cmp(r),
+            (ArchivedValue::Int16(l), Value::Int16(r)) => l.to_native().partial_cmp(r),
+            (ArchivedValue::Int32(l), Value::Int32(r)) => l.to_native().partial_cmp(r),
+            (ArchivedValue::Int64(l), Value::Int64(r)) => l.to_native().partial_cmp(r),
+            (ArchivedValue::UInt8(l), Value::UInt8(r)) => l.partial_cmp(r),
+            (ArchivedValue::UInt16(l), Value::UInt16(r)) => l.to_native().partial_cmp(r),
+            (ArchivedValue::UInt32(l), Value::UInt32(r)) => l.to_native().partial_cmp(r),
+            (ArchivedValue::UInt64(l), Value::UInt64(r)) => l.to_native().partial_cmp(r),
             _ => None,
+        }
+    }
+}
+
+impl PartialEq<Value> for &ArchivedValue {
+    fn eq(&self, other: &Value) -> bool {
+        match (other, self) {
+            (Value::Null, ArchivedValue::Null) => true,
+            (Value::String(l), ArchivedValue::String(r)) => l == r,
+            (Value::Uuid(l), ArchivedValue::Uuid(r)) => l == r,
+            (Value::Bool(l), ArchivedValue::Bool(r)) => l == r,
+            (Value::Int8(l), ArchivedValue::Int8(r)) => l == r,
+            (Value::Int16(l), ArchivedValue::Int16(r)) => l == r,
+            (Value::Int32(l), ArchivedValue::Int32(r)) => l == r,
+            (Value::Int64(l), ArchivedValue::Int64(r)) => l == r,
+            (Value::UInt8(l), ArchivedValue::UInt8(r)) => l == r,
+            (Value::UInt16(l), ArchivedValue::UInt16(r)) => l == r,
+            (Value::UInt32(l), ArchivedValue::UInt32(r)) => l == r,
+            (Value::UInt64(l), ArchivedValue::UInt64(r)) => l == r,
+            _ => false,
         }
     }
 }

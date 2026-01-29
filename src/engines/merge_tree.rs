@@ -1,22 +1,21 @@
 use crate::engines::{Engine, EngineConfig};
 use crate::error::{Error, Result};
-use crate::storage::{ColumnDef, Value};
+use crate::sql::Projection;
+use crate::storage::{ColumnDef, OutputColumn, Value};
 
-use crate::sql::{OutputColumn, Projection};
 use std::cmp::Ordering;
 
 /// Standard engine for most needs.
 /// Does not perform any changes to data. Just keeps it sorted in ASC by ORDER BY
 /// If two rows have the same ORDER BY values, their positions in terms of each other are not deterministic.
-#[allow(dead_code)]
 pub struct MergeTreeEngine {
-    config: EngineConfig,
+    _config: EngineConfig,
 }
 
 impl MergeTreeEngine {
     /// Creates a new `MergeTree` engine with the given configuration.
     pub const fn new(config: EngineConfig) -> Self {
-        Self { config }
+        Self { _config: config }
     }
 }
 

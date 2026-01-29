@@ -1,6 +1,10 @@
-#[derive(Debug)]
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[derive(Debug, Clone)]
 pub struct Strategy {
     pub lines_to_read: usize,
+    pub lines_read: Arc<AtomicUsize>,
 }
 
 impl Strategy {
@@ -18,6 +22,17 @@ impl Strategy {
             in_table_lines
         };
 
-        Self { lines_to_read }
+        Self {
+            lines_to_read,
+            lines_read: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn set_read_lines(&self, num: usize) {
+        self.lines_read.store(num, Ordering::Relaxed);
+    }
+
+    pub fn should_read_next_chunk(&self) -> bool {
+        self.lines_to_read > self.lines_read.load(Ordering::Relaxed)
     }
 }

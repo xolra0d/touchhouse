@@ -15,7 +15,7 @@ TouchHouse results:
 		Execution time: 65.30 ms
 
 	* Select:
-		Execution time: 80.83 ms
+		Execution time: 70.65 ms
 
 ClickHouse results:
 	* Insert:

@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
-use crate::sql::sql_parser::{
+use crate::sql::{
     AggregateProjection, LogicalPlan, Projection, ProjectionValue, RawProjection, ScanSource,
 };
 use crate::storage::TableDef;
@@ -107,9 +107,9 @@ impl LogicalPlan {
                     match raw_projection {
                         RawProjection::Projection(projection) => read_columns.push(projection),
                         RawProjection::AggregateProjection(projection) => {
-                            aggregate_projections.push(projection)
+                            aggregate_projections.push(projection);
                         }
-                    };
+                    }
                 }
                 SelectItem::ExprWithAlias { expr, alias } => {
                     if wildcard.is_some() {
@@ -122,9 +122,9 @@ impl LogicalPlan {
                     match raw_projection {
                         RawProjection::Projection(projection) => read_columns.push(projection),
                         RawProjection::AggregateProjection(projection) => {
-                            aggregate_projections.push(projection)
+                            aggregate_projections.push(projection);
                         }
-                    };
+                    }
                 }
                 SelectItem::QualifiedWildcard(..) => {
                     return Err(Error::UnsupportedCommand(
@@ -146,7 +146,7 @@ impl LogicalPlan {
             }
         }
 
-        if let Some(ref selection) = select.selection {
+        if let Some(selection) = &select.selection {
             plan = LogicalPlan::Filter {
                 expr: Box::new(selection.clone()),
                 plan: Box::new(plan),
@@ -154,7 +154,7 @@ impl LogicalPlan {
         }
 
         plan = LogicalPlan::Projection {
-            columns: read_columns.clone(),
+            projs: read_columns.clone(),
             plan: Box::new(plan),
         };
 
@@ -162,8 +162,7 @@ impl LogicalPlan {
             GroupByExpr::All(modifiers) => {
                 if !modifiers.is_empty() {
                     return Err(Error::UnsupportedCommand(format!(
-                        "Modifiers ({:?}) are not supported in GROUP BY clause",
-                        modifiers
+                        "Modifiers ({modifiers:?}) are not supported in GROUP BY clause"
                     )));
                 }
 
@@ -176,35 +175,36 @@ impl LogicalPlan {
             GroupByExpr::Expressions(expressions, modifiers) => {
                 if !modifiers.is_empty() {
                     return Err(Error::UnsupportedCommand(format!(
-                        "Modifiers ({:?}) are not supported in GROUP BY clause",
-                        modifiers
+                        "Modifiers ({modifiers:?}) are not supported in GROUP BY clause"
                     )));
                 }
 
-                let mut group_by = Vec::with_capacity(expressions.len());
+                if !expressions.is_empty() {
+                    let mut group_by = Vec::with_capacity(expressions.len());
 
-                for expr in expressions {
-                    let proj = match RawProjection::try_from(expr, &available_projections)? {
-                        RawProjection::Projection(proj) => proj,
-                        RawProjection::AggregateProjection(aggr_proj) => {
-                            return Err(Error::InvalidSource(format!(
-                                "Expected projection in ORDER BY, got ({aggr_proj:?}) instead.",
-                            )));
-                        }
+                    for expr in expressions {
+                        let proj = match RawProjection::try_from(expr, &available_projections)? {
+                            RawProjection::Projection(proj) => proj,
+                            RawProjection::AggregateProjection(aggr_proj) => {
+                                return Err(Error::InvalidSource(format!(
+                                    "Expected projection in ORDER BY, got ({aggr_proj:?}) instead.",
+                                )));
+                            }
+                        };
+
+                        group_by.push(proj);
+                    }
+
+                    if let Some(proj) = read_columns.iter().find(|proj| !group_by.contains(proj)) {
+                        return Err(Error::ColumnNotInGroupBy(proj.to_string()));
+                    }
+
+                    plan = LogicalPlan::Aggregate {
+                        aggr_proj: aggregate_projections,
+                        group_by,
+                        plan: Box::new(plan),
                     };
-
-                    group_by.push(proj);
                 }
-
-                if let Some(proj) = read_columns.iter().find(|proj| !group_by.contains(proj)) {
-                    return Err(Error::ColumnNotInGroupBy(proj.to_string()));
-                }
-
-                plan = LogicalPlan::Aggregate {
-                    aggr_proj: aggregate_projections,
-                    group_by,
-                    plan: Box::new(plan),
-                };
             }
         }
 
@@ -314,7 +314,7 @@ impl LogicalPlan {
     ///     2. Unsupported plan type: `UnsupportedCommand`.
     fn extract_columns_from_plan(plan: &LogicalPlan) -> Result<Vec<Projection>> {
         match plan {
-            LogicalPlan::Projection { columns, .. } => Ok(columns.clone()),
+            LogicalPlan::Projection { projs: columns, .. } => Ok(columns.clone()),
             LogicalPlan::Filter { plan, .. }
             | LogicalPlan::OrderBy { plan, .. }
             | LogicalPlan::Limit { plan, .. } => Self::extract_columns_from_plan(plan),
