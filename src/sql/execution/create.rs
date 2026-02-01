@@ -16,15 +16,17 @@ impl CommandRunner {
     ///   * Ok: `OutputTable` with success status
     ///   * Error: `InvalidDatabaseName` if directory creation fails
     pub fn create_database(name: String, if_not_exists: bool) -> Result<Vec<OutputColumn>> {
-        std::fs::create_dir(CONFIG.get_db_dir().join(name)).map_err(|error| {
-            match error.kind() {
-                std::io::ErrorKind::AlreadyExists if !if_not_exists => Error::DatabaseAlreadyExists,
-                std::io::ErrorKind::PermissionDenied => Error::PermissionDenied,
-                _ => Error::InvalidDatabaseName,
-            }
-        })?;
-
-        Ok(OutputColumn::build_ok_vec())
+        match std::fs::create_dir(CONFIG.get_db_dir().join(name)) {
+            Ok(()) => Ok(OutputColumn::build_ok_vec()),
+            Err(error) => match error.kind() {
+                std::io::ErrorKind::AlreadyExists if if_not_exists => {
+                    Ok(OutputColumn::build_ok_vec())
+                }
+                std::io::ErrorKind::AlreadyExists => Err(Error::DatabaseAlreadyExists),
+                std::io::ErrorKind::PermissionDenied => Err(Error::PermissionDenied),
+                _ => Err(Error::InvalidDatabaseName),
+            },
+        }
     }
 
     /// Creates a table.

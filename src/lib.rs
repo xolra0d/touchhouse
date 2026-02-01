@@ -79,7 +79,10 @@ pub async fn accept_conn(max_conn: Arc<Semaphore>, listener: &TcpListener) {
                 drop(connection_permit);
             });
         }
-        Err(error) => error!("Failed to accept connection: {error}"),
+        Err(error) => {
+            error!("Failed to accept connection: {error}");
+            drop(connection_permit);
+        }
     }
 }
 
