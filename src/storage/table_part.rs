@@ -75,7 +75,8 @@ impl TablePartInfo {
             )));
         }
 
-        let compressed = &bytes[(mark_info.start as usize)..(mark_info.end as usize)];
+        let compressed = &bytes[(usize::try_from(mark_info.start).expect("System is not 64bit"))
+            ..(usize::try_from(mark_info.end).expect("System is not 64bit"))];
 
         decompress_bytes(compressed, compression_type)
     }

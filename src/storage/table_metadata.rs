@@ -7,7 +7,7 @@ use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as 
 
 pub const TABLE_METADATA_MAGIC_BYTES: &[u8] = b"THMETA".as_slice();
 pub const TABLE_METADATA_FILENAME: &str = ".metadata";
-pub const STANDARD_GRANULARITY: usize = 8192;
+pub const STANDARD_GRANULARITY: u32 = 8192;
 
 const VERSION: u16 = 1;
 
@@ -32,7 +32,7 @@ pub struct TableSettings {
 impl Default for TableSettings {
     fn default() -> Self {
         TableSettings {
-            index_granularity: STANDARD_GRANULARITY as u32,
+            index_granularity: STANDARD_GRANULARITY,
             engine: EngineName::MergeTree,
         }
     }

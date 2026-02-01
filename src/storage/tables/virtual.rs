@@ -58,7 +58,7 @@ impl From<Vec<OutputColumn>> for VirtualStorage<Immutable> {
 
 impl<Mode: sealed::SealedMode> StorageRead for VirtualStorage<Mode> {
     fn get_total_rows(&self) -> usize {
-        self.columns.first().map(|x| x.data.len()).unwrap_or(0)
+        self.columns.first().map_or(0, |x| x.data.len())
     }
 
     fn get_schema(&self) -> &TableSchema {
@@ -66,7 +66,9 @@ impl<Mode: sealed::SealedMode> StorageRead for VirtualStorage<Mode> {
     }
 
     fn load_next_chunk(&mut self) -> Result<Option<()>> {
-        let max_granule_idx = self.get_total_rows().div_ceil(STANDARD_GRANULARITY);
+        let max_granule_idx = self
+            .get_total_rows()
+            .div_ceil(STANDARD_GRANULARITY as usize);
 
         if let Some(granule_idx) = &mut self.granule_idx
             && *granule_idx < max_granule_idx
@@ -81,7 +83,7 @@ impl<Mode: sealed::SealedMode> StorageRead for VirtualStorage<Mode> {
         }
     }
 
-    fn access_chunk_column(&self, proj: &Projection) -> Result<Vec<impl ToValue>> {
+    fn access_chunk_column<'v>(&'v self, proj: &Projection) -> Result<Vec<impl ToValue + 'v>> {
         let Some(granule_idx) = self.granule_idx else {
             let msg =
                 "Tried to acces chunk data in `VirtualStorage::access_chunk_column` while no data was loaded.".to_string();

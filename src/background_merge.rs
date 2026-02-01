@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::sql::Projection;
 use crate::storage::{NativeStorage, StorageRead, TablePart, ToValue, Value};
 
 use std::{cmp::Ordering, time::Duration};
@@ -130,14 +131,20 @@ impl BackgroundMerge {
 
         let mut storage = NativeStorage::try_from(table_def)?;
 
+        let projections: Vec<_> = part_info
+            .column_defs
+            .iter()
+            .map(|x| Projection::from(x.clone()))
+            .collect();
+
         for _ in 0..part_info.marks.len() {
             storage.load_next_chunk()?;
 
             for column_idx in 0..part_info.column_defs.len() {
-                let data = storage.access_chunk_column(column_idx)?;
+                let data = storage.access_chunk_column(&projections[column_idx])?;
                 let data = data
                     .into_iter()
-                    .map(|x| x.to_value())
+                    .map(ToValue::to_value)
                     .collect::<Result<Vec<Value>>>()?;
                 columns[column_idx].data.extend(data);
             }

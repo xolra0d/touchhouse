@@ -3,7 +3,6 @@
 //   * Using `Encoder` trait we encode Received Result<OutputTable, T: Display>
 //     Typically, generic T is `Error`, which then converted using `ToString` trait
 
-use derive_more::Display;
 use rmp_serde::encode::Error as RMPError;
 use serde::Serialize;
 use std::fmt;
@@ -16,21 +15,31 @@ type HeaderType = u64;
 const HEADER_SIZE: usize = size_of::<HeaderType>();
 
 // Created for derive Display and IO error handling (required by `Encoder` and `Decoder` traits).
-#[derive(Debug, Serialize, Display)]
+#[derive(Debug, Serialize)]
 pub enum RMPProtocolError {
-    #[display("SQL parsing error. Unknown length")]
     UnknownLength,
-    #[display("SQL parsing error. Invalid data model: {_0}")]
     InvalidDataModel(String),
-    #[display("SQL parsing error. Syntax error: {_0}")]
     Syntax(String),
-    #[display("SQL parsing error. Depth limit exceeded")]
     DepthLimitExceeded,
-    #[display("SQL parsing error. IO error: {_0}")]
     IOError(String),
-
-    #[display("Conversion error. {_0}")]
     Conversion(String),
+}
+
+impl fmt::Display for RMPProtocolError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RMPProtocolError::UnknownLength => write!(f, "SQL parsing error. Unknown length"),
+            RMPProtocolError::InvalidDataModel(msg) => {
+                write!(f, "SQL parsing error. Invalid data model: {msg}")
+            }
+            RMPProtocolError::Syntax(msg) => write!(f, "SQL parsing error. Syntax error: {msg}"),
+            RMPProtocolError::DepthLimitExceeded => {
+                write!(f, "SQL parsing error. Depth limit exceeded")
+            }
+            RMPProtocolError::IOError(msg) => write!(f, "SQL parsing error. IO error: {msg}"),
+            RMPProtocolError::Conversion(msg) => write!(f, "Conversion error. {msg}"),
+        }
+    }
 }
 
 // Required by `Encoder` and `Decoder` traits.

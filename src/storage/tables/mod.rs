@@ -20,7 +20,7 @@ pub trait StorageRead {
     fn get_total_rows(&self) -> usize;
     fn get_schema(&self) -> &TableSchema;
     fn load_next_chunk(&mut self) -> Result<Option<()>>;
-    fn access_chunk_column(&self, proj: &Projection) -> Result<Vec<impl ToValue>>;
+    fn access_chunk_column<'v>(&'v self, proj: &Projection) -> Result<Vec<impl ToValue + 'v>>; // output is not ref `proj`
 }
 
 pub trait StorageWrite {

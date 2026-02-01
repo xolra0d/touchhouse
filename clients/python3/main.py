@@ -21,7 +21,6 @@ def decode_and_print_table(message_bytes: bytes):
     if columns := message.get("Ok"):
         data_columns = columns[0]
         execution_time = columns[1]
-
         table = prettytable.PrettyTable()
 
         for column in data_columns:
@@ -33,8 +32,13 @@ def decode_and_print_table(message_bytes: bytes):
             if alias is not None:
                 column_name = alias
             else:
-                column_name = next(iter(next(iter(column_info[1].values()))))
-
+                column_def = next(iter(column_info[1].values()))
+                if isinstance(column_def, list):
+                    column_name = column_def[0]
+                elif isinstance(column_def, dict):
+                    column_name = next(iter(column_def.values()))
+                else:
+                    column_name = str(column_def)
             data = []
             for val in column_data:
                 if isinstance(val, dict):

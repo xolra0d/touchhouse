@@ -22,10 +22,7 @@ max_concurrent_connections = 100
 log_level = 1
 
 # Signifies when database can do background merges of parts, depending on database load
-background_merge_available_under = 5
-
-# Number of tasks per thread
-tasks_per_thread = 10"#;
+background_merge_available_under = 5"#;
 
 /// Server configuration
 #[derive(Debug, Serialize, Deserialize)]
@@ -44,8 +41,6 @@ pub struct Config {
     max_concurrent_connections: usize,
     /// Signifies when database can do background merges of parts, depending on database load
     background_merge_available_under: usize,
-    /// Number of tasks per thread
-    tasks_per_thread: usize,
 }
 
 impl Config {
@@ -71,11 +66,6 @@ impl Config {
     /// Get max connections from configuration
     pub const fn get_max_connections(&self) -> usize {
         self.max_concurrent_connections
-    }
-
-    /// Get tasks per thread from configuration
-    pub const fn get_tasks_per_thread(&self) -> usize {
-        self.tasks_per_thread
     }
 
     /// Provides the background merge availability threshold.

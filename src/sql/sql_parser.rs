@@ -38,6 +38,13 @@ impl ProjectionValue {
             ProjectionValue::ColumnDef(col_def) => col_def.field_type.clone(),
         }
     }
+
+    pub fn add_aggr_fn_around(self, name: &str) -> Self {
+        match self {
+            Self::Value(value) => Self::Value(Value::String(format!("{name}({value})"))),
+            Self::ColumnDef(col_def) => Self::Value(Value::String(format!("{name}({col_def})"))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -68,10 +75,19 @@ impl Projection {
     }
 }
 
+impl From<ColumnDef> for Projection {
+    fn from(value: ColumnDef) -> Self {
+        Projection {
+            alias: None,
+            source: ProjectionValue::ColumnDef(value),
+        }
+    }
+}
+
 impl fmt::Display for ProjectionValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), fmt::Error> {
         match &self {
-            Self::Value(value) => write!(f, "{value:?}"),
+            Self::Value(value) => write!(f, "{value}"),
             Self::ColumnDef(col_def) => write!(f, "{}", col_def.name),
         }
     }
@@ -98,6 +114,7 @@ pub enum AggregateFunction {
     Max(Projection),
     Sum(Projection),
     Avg(Projection),
+    Count(Projection),
 }
 
 impl AggregateFunction {
@@ -144,6 +161,16 @@ impl AggregateFunction {
                 }
 
                 Ok(AggregateFunction::Avg(args.remove(0)))
+            }
+            "count" => {
+                if args.len() != 1 {
+                    return Err(Error::InvalidFunctionParams(format!(
+                        "for `count` function expected only 1 argument, but received: {}",
+                        args.len()
+                    )));
+                }
+
+                Ok(AggregateFunction::Count(args.remove(0)))
             }
             _ => Err(Error::UnknownFunction(format!(
                 "Unknown function name: {function_name}"

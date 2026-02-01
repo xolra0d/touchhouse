@@ -12,6 +12,17 @@ use crate::storage::{NativeStorage, OutputColumn, StorageRead, VirtualStorage};
 
 use sqlparser::ast::Expr;
 
+struct QueryParams {
+    projections: Vec<Projection>,
+    filter: Option<Box<Expr>>,
+    aggregate_cols: Vec<AggregateProjection>,
+    group_by: Vec<Projection>,
+    having: Option<Box<Expr>>,
+    order_by: Option<Vec<Vec<Projection>>>,
+    limit: Option<usize>,
+    offset: usize,
+}
+
 impl CommandRunner {
     pub fn select(select: SelectNode) -> Result<Vec<OutputColumn>> {
         let SelectNode {
@@ -35,51 +46,47 @@ impl CommandRunner {
             }
         };
 
+        let params = QueryParams {
+            projections: columns,
+            filter,
+            aggregate_cols,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+        };
+
         match scan_source {
             ScanSource::Table(table_def) => {
                 let storage = NativeStorage::try_from(&table_def)?;
-                Self::scan_from_storage(
-                    storage,
-                    columns,
-                    filter,
-                    aggregate_cols,
-                    group_by,
-                    having,
-                    order_by,
-                    limit,
-                    offset,
-                )
+                Self::scan_from_storage(storage, params)
             }
             ScanSource::Subquery(virtual_storage) => {
                 let storage = VirtualStorage::from(*virtual_storage);
-                Self::scan_from_storage(
-                    storage,
-                    columns,
-                    filter,
-                    aggregate_cols,
-                    group_by,
-                    having,
-                    order_by,
-                    limit,
-                    offset,
-                )
+                Self::scan_from_storage(storage, params)
             }
         }
     }
 
     fn scan_from_storage<S: StorageRead>(
         mut storage: S,
-        projections: Vec<Projection>,
-        filter: Option<Box<Expr>>,
-        aggregate_cols: Vec<AggregateProjection>,
-        group_by: Vec<Projection>,
-        having: Option<Box<Expr>>,
-        order_by: Option<Vec<Vec<Projection>>>,
-        limit: Option<usize>,
-        offset: usize,
+        params: QueryParams,
     ) -> Result<Vec<OutputColumn>> {
+        let QueryParams {
+            projections,
+            filter,
+            aggregate_cols,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+        } = params;
+
         let total_storage_rows = storage.get_total_rows();
         let strategy = Strategy::new(limit, offset, total_storage_rows, order_by.is_some());
+
         let filter = filter
             .map(|x| CompiledFilter::compile(*x, &storage.get_schema().columns))
             .transpose()?;
@@ -87,9 +94,10 @@ impl CommandRunner {
         let mut aggregator = Aggregator::new(projections, aggregate_cols, group_by, having);
 
         while strategy.should_read_next_chunk() && storage.load_next_chunk()?.is_some() {
-            let mut granule_buffer = Vec::with_capacity(output_data.len());
+            let projs_to_read = aggregator.get_projs_to_read();
+            let mut granule_buffer = Vec::with_capacity(projs_to_read.len());
 
-            for projection in &projections {
+            for projection in projs_to_read {
                 let col_values = storage.access_chunk_column(projection)?;
                 granule_buffer.push(col_values);
             }
@@ -98,15 +106,11 @@ impl CommandRunner {
                 filter.filter_granule(&mut granule_buffer)?;
             }
 
-            output_data = CollectFn::accumulate(output_data, granule_buffer)?;
-            strategy.set_read_lines(output_data.first().map(|x| x.len()).unwrap_or(0));
+            let rows_count = aggregator.append_chunk(granule_buffer)?;
+            strategy.set_lines_read(rows_count);
         }
 
-        let mut output_columns: Vec<_> = projections
-            .into_iter()
-            .zip(output_data)
-            .map(|(proj, data)| OutputColumn { proj, data })
-            .collect();
+        let mut output_columns = aggregator.finalize();
 
         if let Some(order_by_vec) = order_by {
             for order_by in order_by_vec {

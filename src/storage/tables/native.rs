@@ -19,7 +19,7 @@ enum LockFormat<'a> {
     RefMut(RefMut<'a, TableDef, TableConfig>),
 }
 
-impl<'a> LockFormat<'a> {
+impl LockFormat<'_> {
     fn table_def(&self) -> &TableDef {
         match self {
             Self::Ref(data) => data.key(),
@@ -41,7 +41,7 @@ pub struct NativeStorage<'a, Mode: sealed::SealedMode> {
     _marker: PhantomData<Mode>,
 }
 
-impl<'a> TryFrom<&TableDef> for NativeStorage<'a, Immutable> {
+impl TryFrom<&TableDef> for NativeStorage<'_, Immutable> {
     type Error = Error;
     fn try_from(table_def: &TableDef) -> Result<Self> {
         let Some(data_lock) = TABLE_DATA.get(table_def) else {
@@ -55,7 +55,7 @@ impl<'a> TryFrom<&TableDef> for NativeStorage<'a, Immutable> {
     }
 }
 
-impl<'a> NativeStorage<'a, Mutable> {
+impl NativeStorage<'_, Mutable> {
     pub fn try_from_mut(table_def: &TableDef) -> Result<Self> {
         let Some(data_lock) = TABLE_DATA.get_mut(table_def) else {
             return Err(Error::TableNotFound);
@@ -68,13 +68,13 @@ impl<'a> NativeStorage<'a, Mutable> {
     }
 }
 
-impl<'a, Mode: sealed::SealedMode> StorageRead for NativeStorage<'a, Mode> {
+impl<Mode: sealed::SealedMode> StorageRead for NativeStorage<'_, Mode> {
     fn get_total_rows(&self) -> usize {
         self.get_ref_data()
             .1
             .infos
             .iter()
-            .map(|x| x.row_count as usize)
+            .map(|x| usize::try_from(x.row_count).expect("System is not 64bit"))
             .sum()
     }
 
@@ -89,19 +89,19 @@ impl<'a, Mode: sealed::SealedMode> StorageRead for NativeStorage<'a, Mode> {
 
         if let Some(loaded_chunk) = &mut self.loaded_chunk {
             let granule_mark_infos = &loaded_chunk.part_info.marks[loaded_chunk.granule_idx].info;
-            let mut chunk_bytes = Vec::with_capacity(loaded_chunk.part_info.column_defs.len());
-
-            for col_idx in 0..loaded_chunk.part_info.column_defs.len() {
-                let bytes = TablePartInfo::get_granule_bytes_decompressed(
-                    &loaded_chunk.mmaps[col_idx],
-                    &granule_mark_infos[col_idx],
-                    &loaded_chunk.part_info.column_defs[col_idx]
-                        .constraints
-                        .compression_type,
-                )?;
-                chunk_bytes.push(bytes);
-            }
-
+            let chunk_bytes = loaded_chunk
+                .part_info
+                .column_defs
+                .iter()
+                .enumerate()
+                .map(|(col_idx, col_def)| {
+                    TablePartInfo::get_granule_bytes_decompressed(
+                        &loaded_chunk.mmaps[col_idx],
+                        &granule_mark_infos[col_idx],
+                        &col_def.constraints.compression_type,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
             loaded_chunk.chunk_bytes = chunk_bytes;
 
             Ok(Some(()))
@@ -110,7 +110,7 @@ impl<'a, Mode: sealed::SealedMode> StorageRead for NativeStorage<'a, Mode> {
         }
     }
 
-    fn access_chunk_column(&self, proj: &Projection) -> Result<Vec<impl ToValue>> {
+    fn access_chunk_column<'v>(&'v self, proj: &Projection) -> Result<Vec<impl ToValue + 'v>> {
         let Some(loaded_chunk) = &self.loaded_chunk else {
             let msg = format!(
                 "Tried to acces chunk data in `NativeStorage::access_chunk_column` while no data was loaded for table: {}",
@@ -128,14 +128,14 @@ impl<'a, Mode: sealed::SealedMode> StorageRead for NativeStorage<'a, Mode> {
             .iter()
             .position(|x| x.name == proj_source_string)
         else {
-            return Ok(vec![&ArchivedValue::Null; STANDARD_GRANULARITY]);
+            return Ok(vec![&ArchivedValue::Null; STANDARD_GRANULARITY as usize]);
         };
 
         let values: &ArchivedVec<ArchivedValue> =
             unsafe { rkyv::access_unchecked(&loaded_chunk.chunk_bytes[col_idx]) };
 
         let mut result = Vec::with_capacity(values.len());
-        for value in values.into_iter() {
+        for value in values.iter() {
             result.push(value);
         }
         Ok(result)
@@ -171,9 +171,11 @@ impl StorageWrite for NativeStorage<'_, Mutable> {
             }
             (Err(error), _) => {
                 let error_msg = format!(
-                    "Could not remove table entry from disk: {}. Stop database, remove {:?} folder, and restart the database.",
+                    "Could not remove table entry from disk: {}. Stop database, remove {} folder, and restart the database.",
                     error,
-                    std::path::absolute(&table_path).unwrap_or(table_path),
+                    std::path::absolute(&table_path)
+                        .unwrap_or(table_path)
+                        .display(),
                 );
 
                 error!("{error_msg}");
@@ -183,7 +185,7 @@ impl StorageWrite for NativeStorage<'_, Mutable> {
     }
 }
 
-impl<'a> NativeStorage<'a, Mutable> {
+impl NativeStorage<'_, Mutable> {
     fn get_mut_data(&mut self) -> (&TableDef, &mut TableConfig) {
         match &mut self.data_lock {
             LockFormat::RefMut(r) => r.pair_mut(),
@@ -192,7 +194,7 @@ impl<'a> NativeStorage<'a, Mutable> {
     }
 }
 
-impl<'a, Mode: sealed::SealedMode> NativeStorage<'a, Mode> {
+impl<Mode: sealed::SealedMode> NativeStorage<'_, Mode> {
     fn advance_chunk_metadata(&mut self) -> Result<Option<()>> {
         if let Some(loaded_chunk) = &self.loaded_chunk {
             if loaded_chunk.granule_idx + 1 == loaded_chunk.part_info.marks.len() {

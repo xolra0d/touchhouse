@@ -1,91 +1,117 @@
-use derive_more::Display;
+use std::fmt;
+
 use serde::Serialize;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Universal error.
-#[derive(Serialize, Debug, Display, PartialEq, Eq)]
+#[derive(Serialize, Debug, PartialEq, Eq)]
 pub enum Error {
     // mod storage
-    #[display("System time went backword. Try again later.")]
     SystemTimeWentBackword,
-    #[display("Database not found.")]
     DatabaseNotFound,
-    #[display("Table not found.")]
     TableNotFound,
-    #[display("Invalid database name.")]
     InvalidDatabaseName,
-    #[display("Invalid column name: {_0}")]
     InvalidColumnName(String),
-    #[display("Database already exists.")]
     DatabaseAlreadyExists,
-    #[display("Table already exists.")]
     TableAlreadyExists,
-
     // mod sql
-    #[display("Couldn't parse SQL: {_0}")]
     SqlToAstConversion(String),
-    #[display("Unsupported command: {_0}.")]
     UnsupportedCommand(String),
-    #[display("Unsupported column name: {_0}.")]
     UnsupportedColumnType(String),
-    #[display("Invalid engine name.")]
     InvalidEngineName,
-    #[display("Unsupported table option: {_0}")]
     UnsupportedTableOption(String),
-    #[display("Invalid ORDER BY: {_0}")]
     InvalidOrderBy(String),
-    #[display("Invalid PRIMARY KEY: {_0}")]
     InvalidPrimaryKey(String),
-    #[display("Invalid pair of ORDER BY and PRIMARY KEY. PRIMARY KEY should be prefix of ORDER BY")]
     InvalidOrderByPrimaryKeyPair,
-    #[display("Invalid table name.")]
     InvalidTableName,
-    #[display("No columns specified.")]
     NoColumnsSpecified,
-    #[display("Invalid columns specified.")]
     InvalidColumnsSpecified,
-    #[display("Invalid source of values: {_0}")]
     InvalidSource(String),
-    #[display("Unsupported column constraint: {_0}")]
     UnsupportedColumnConstraint(String),
-    #[display("Could not insert data: {_0}.")]
     CouldNotInsertData(String),
-    #[display("Could not read data: {_0}.")]
     CouldNotReadData(String),
-    #[display("Could not create table: {_0}.")]
     CouldNotCreateTable(String),
-    #[display("No values provided")]
     EmptySource,
-    #[display("Permission denied")]
     PermissionDenied,
-    #[display("Unsupported filter: {_0}")]
     UnsupportedFilter(String),
-    #[display("Column not found: {_0}")]
     ColumnNotFound(String),
-    #[display("Duplicate column in projection: {_0}")]
     DuplicateColumn(String),
-    #[display("Invalid limit value: {_0}")]
     InvalidLimitValue(String),
-    #[display("Invalid number of params specified: {_0}")]
     InvalidNumberOfParamsSpecified(String),
-    #[display("Unknown function: {_0}")]
     UnknownFunction(String),
-    #[display("Nested functions are not supported: {_0}")]
     UnsupportedNestedFunctions(String),
-    #[display("Invalid function paramaters: {_0}")]
     InvalidFunctionParams(String),
-    #[display("Part ({_0}) does not have any columns.")]
     PartDoesNotHaveColumns(String),
-    #[display("Column ({_0}) is not under aggregate function and not in GROUP BY keys.")]
     ColumnNotInGroupBy(String),
-
     // mod engines
-    #[display("No ORDER BY columns found")]
     OrderByColumnsNotFound,
-
     // mod main
-    SendResponse, // does not need display
-    #[display("Internal error happened: {_0}")]
+    SendResponse,
     Internal(String),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            // mod storage
+            Error::SystemTimeWentBackword => {
+                write!(f, "System time went backword. Try again later.")
+            }
+            Error::DatabaseNotFound => write!(f, "Database not found."),
+            Error::TableNotFound => write!(f, "Table not found."),
+            Error::InvalidDatabaseName => write!(f, "Invalid database name."),
+            Error::InvalidColumnName(name) => write!(f, "Invalid column name: {name}"),
+            Error::DatabaseAlreadyExists => write!(f, "Database already exists."),
+            Error::TableAlreadyExists => write!(f, "Table already exists."),
+            // mod sql
+            Error::SqlToAstConversion(msg) => write!(f, "Couldn't parse SQL: {msg}"),
+            Error::UnsupportedCommand(cmd) => write!(f, "Unsupported command: {cmd}."),
+            Error::UnsupportedColumnType(typ) => write!(f, "Unsupported column name: {typ}."),
+            Error::InvalidEngineName => write!(f, "Invalid engine name."),
+            Error::UnsupportedTableOption(opt) => write!(f, "Unsupported table option: {opt}"),
+            Error::InvalidOrderBy(msg) => write!(f, "Invalid ORDER BY: {msg}"),
+            Error::InvalidPrimaryKey(msg) => write!(f, "Invalid PRIMARY KEY: {msg}"),
+            Error::InvalidOrderByPrimaryKeyPair => write!(
+                f,
+                "Invalid pair of ORDER BY and PRIMARY KEY. PRIMARY KEY should be prefix of ORDER BY"
+            ),
+            Error::InvalidTableName => write!(f, "Invalid table name."),
+            Error::NoColumnsSpecified => write!(f, "No columns specified."),
+            Error::InvalidColumnsSpecified => write!(f, "Invalid columns specified."),
+            Error::InvalidSource(src) => write!(f, "Invalid source of values: {src}"),
+            Error::UnsupportedColumnConstraint(con) => {
+                write!(f, "Unsupported column constraint: {con}")
+            }
+            Error::CouldNotInsertData(msg) => write!(f, "Could not insert data: {msg}."),
+            Error::CouldNotReadData(msg) => write!(f, "Could not read data: {msg}."),
+            Error::CouldNotCreateTable(msg) => write!(f, "Could not create table: {msg}."),
+            Error::EmptySource => write!(f, "No values provided"),
+            Error::PermissionDenied => write!(f, "Permission denied"),
+            Error::UnsupportedFilter(flt) => write!(f, "Unsupported filter: {flt}"),
+            Error::ColumnNotFound(col) => write!(f, "Column not found: {col}"),
+            Error::DuplicateColumn(col) => write!(f, "Duplicate column in projection: {col}"),
+            Error::InvalidLimitValue(val) => write!(f, "Invalid limit value: {val}"),
+            Error::InvalidNumberOfParamsSpecified(msg) => {
+                write!(f, "Invalid number of params specified: {msg}")
+            }
+            Error::UnknownFunction(func) => write!(f, "Unknown function: {func}"),
+            Error::UnsupportedNestedFunctions(msg) => {
+                write!(f, "Nested functions are not supported: {msg}")
+            }
+            Error::InvalidFunctionParams(msg) => write!(f, "Invalid function paramaters: {msg}"),
+            Error::PartDoesNotHaveColumns(part) => {
+                write!(f, "Part ({part}) does not have any columns.")
+            }
+            Error::ColumnNotInGroupBy(col) => write!(
+                f,
+                "Column ({col}) is not under aggregate function and not in GROUP BY keys."
+            ),
+            // mod engines
+            Error::OrderByColumnsNotFound => write!(f, "No ORDER BY columns found"),
+            // mod main
+            Error::SendResponse => write!(f, "SendResponse"),
+            Error::Internal(msg) => write!(f, "Internal error happened: {msg}"),
+        }
+    }
 }

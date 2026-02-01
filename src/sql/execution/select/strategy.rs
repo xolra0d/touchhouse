@@ -28,7 +28,7 @@ impl Strategy {
         }
     }
 
-    pub fn set_read_lines(&self, num: usize) {
+    pub fn set_lines_read(&self, num: usize) {
         self.lines_read.store(num, Ordering::Relaxed);
     }
 

@@ -1,6 +1,7 @@
 use memmap2::{Advice, Mmap};
 use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::Serialize;
+use std::fmt;
 use std::fs::File;
 use std::path::Path;
 
@@ -30,6 +31,12 @@ pub struct ColumnDef {
     pub name: String,
     pub field_type: ValueType,
     pub constraints: Constraints,
+}
+
+impl fmt::Display for ColumnDef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

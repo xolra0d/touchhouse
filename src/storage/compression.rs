@@ -17,6 +17,8 @@ impl Default for CompressionType {
 }
 
 impl ValueType {
+    // add other compressions in future, when either own parser is written or sqlparser-rs allows to choose compression during table creation
+    #[allow(clippy::unused_self)]
     pub fn get_optimal_compression(&self) -> CompressionType {
         CompressionType::LZ4(3)
     }
