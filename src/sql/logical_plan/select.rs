@@ -338,7 +338,7 @@ impl LogicalPlan {
         let projs = match &order_by.kind {
             OrderByKind::All(_params) => vec![read_columns.to_vec()],
             OrderByKind::Expressions(order_by_given) => {
-                Self::parse_order_by_expressions(order_by_given, available_projections)?
+                Self::parse_order_by_expressions(order_by_given, read_columns)?
             }
         };
 
