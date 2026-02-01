@@ -15,10 +15,14 @@ impl CommandRunner {
     ///   * Ok: `OutputTable` with success status
     ///   * Error: `TableNotFound` or `Internal` on failure
     pub fn drop_table(table_def: &TableDef, if_exists: bool) -> Result<Vec<OutputColumn>> {
-        let storage = NativeStorage::try_from_mut(table_def)?;
-        storage.drop(if_exists)?;
-
-        Ok(OutputColumn::build_ok_vec())
+        match NativeStorage::try_from_mut(table_def) {
+            Ok(storage) => {
+                storage.drop(if_exists)?;
+                Ok(OutputColumn::build_ok_vec())
+            }
+            Err(Error::TableNotFound) if if_exists => Ok(OutputColumn::build_ok_vec()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Drops a database.
