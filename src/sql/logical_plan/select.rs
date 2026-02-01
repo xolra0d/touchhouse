@@ -254,6 +254,16 @@ impl LogicalPlan {
 
                 let group_by =
                     Self::parse_group_by_expressions(expressions, available_projections)?;
+
+                if group_by.is_empty()
+                    && !read_columns.is_empty()
+                    && !aggregate_projections.is_empty()
+                {
+                    return Err(Error::UnsupportedCommand(
+                        "Cannot mix regular columns and aggregate functions without GROUP BY clause".to_string(),
+                    ));
+                }
+
                 Self::validate_all_columns_in_group_by(&read_columns, &group_by)?;
 
                 Ok(LogicalPlan::Aggregate {
