@@ -159,6 +159,7 @@ impl BackgroundMerge {
         mut cols1: Vec<PhysicalColumn>,
         cols2: Vec<PhysicalColumn>,
     ) -> Vec<PhysicalColumn> {
+        let base_len = cols1.first().map_or(0, |c| c.data.len());
         for column_1 in cols2 {
             if let Some(position) = cols1
                 .iter()
@@ -172,7 +173,7 @@ impl BackgroundMerge {
                     .default
                     .clone()
                     .unwrap_or_default();
-                let mut data = vec![default_value; cols1[0].data.len()];
+                let mut data = vec![default_value; base_len];
                 data.extend(column_1.data.into_iter());
                 cols1.push(PhysicalColumn {
                     column_def: column_1.column_def.clone(),
