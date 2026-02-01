@@ -85,7 +85,12 @@ impl CommandRunner {
         } = params;
 
         let total_storage_rows = storage.get_total_rows();
-        let strategy = Strategy::new(limit, offset, total_storage_rows, order_by.is_some());
+        let strategy = Strategy::new(
+            limit,
+            offset,
+            total_storage_rows,
+            order_by.is_some() || !group_by.is_empty(),
+        );
 
         let filter = filter
             .map(|x| CompiledFilter::compile(*x, &storage.get_schema().columns))

@@ -12,9 +12,9 @@ impl Strategy {
         limit: Option<usize>,
         offset: usize,
         in_table_lines: usize,
-        have_order_by: bool,
+        should_read_all_rows: bool,
     ) -> Self {
-        let lines_to_read = if have_order_by {
+        let lines_to_read = if should_read_all_rows {
             in_table_lines
         } else if let Some(limit) = limit {
             in_table_lines.min(limit) + offset
