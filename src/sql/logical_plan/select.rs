@@ -56,12 +56,7 @@ impl LogicalPlan {
             &available_projections,
         )?;
         plan = Self::apply_having(plan, select.having.as_ref());
-        plan = Self::apply_order_by(
-            plan,
-            query.order_by.as_ref(),
-            &read_columns,
-            &available_projections,
-        )?;
+        plan = Self::apply_order_by(plan, query.order_by.as_ref(), &read_columns)?;
         plan = Self::apply_limit(plan, query.limit_clause.as_ref())?;
 
         Ok(plan)
@@ -329,7 +324,6 @@ impl LogicalPlan {
         plan: LogicalPlan,
         order_by: Option<&OrderBy>,
         read_columns: &[Projection],
-        available_projections: &[Projection],
     ) -> Result<LogicalPlan> {
         let Some(order_by) = order_by else {
             return Ok(plan);

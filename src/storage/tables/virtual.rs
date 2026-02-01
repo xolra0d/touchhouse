@@ -66,16 +66,16 @@ impl<Mode: sealed::SealedMode> StorageRead for VirtualStorage<Mode> {
     }
 
     fn load_next_chunk(&mut self) -> Result<Option<()>> {
-        let max_granule_idx = self
+        let granule_count = self
             .get_total_rows()
             .div_ceil(STANDARD_GRANULARITY as usize);
 
         if let Some(granule_idx) = &mut self.granule_idx
-            && *granule_idx < max_granule_idx
+            && *granule_idx + 1 < granule_count
         {
             *granule_idx += 1;
             Ok(Some(()))
-        } else if max_granule_idx != 0 {
+        } else if granule_count != 0 {
             self.granule_idx = Some(0);
             Ok(Some(()))
         } else {
@@ -99,8 +99,9 @@ impl<Mode: sealed::SealedMode> StorageRead for VirtualStorage<Mode> {
             return Err(Error::Internal(msg));
         };
 
-        let col_data =
-            self.columns[col_idx].data[granule_idx * 8192..(granule_idx + 1) * 8192].to_vec(); // TODO: REMOVE THIS. CONSIDER CONSUMING
+        let col_data = self.columns[col_idx].data[granule_idx * (STANDARD_GRANULARITY as usize)
+            ..(granule_idx + 1) * (STANDARD_GRANULARITY as usize)]
+            .to_vec(); // TODO: REMOVE THIS. CONSIDER CONSUMING
         Ok(col_data)
     }
 }
