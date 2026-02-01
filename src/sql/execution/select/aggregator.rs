@@ -10,9 +10,9 @@ use crate::{
 
 #[derive(Debug, Clone)]
 enum RawData {
-    Sum(f64),
-    Min(f64),
-    Max(f64),
+    Sum(Option<f64>),
+    Min(Option<f64>),
+    Max(Option<f64>),
     Count(usize),
     Avg { sum: f64, count: usize },
     Values(Vec<Value>),
@@ -22,13 +22,16 @@ impl RawData {
     fn add_value(&mut self, val: impl ToValue) -> Result<()> {
         match self {
             RawData::Sum(sum) => {
-                *sum += val.as_f64().ok_or(Error::InvalidColumnsSpecified)?;
+                let v = val.as_f64().ok_or(Error::InvalidColumnsSpecified)?;
+                *sum = Some(sum.map_or(v, |m| m + v));
             }
             RawData::Min(min) => {
-                *min = min.min(val.as_f64().ok_or(Error::InvalidColumnsSpecified)?);
+                let v = val.as_f64().ok_or(Error::InvalidColumnsSpecified)?;
+                *min = Some(min.map_or(v, |m| m.min(v)));
             }
             RawData::Max(max) => {
-                *max = max.max(val.as_f64().ok_or(Error::InvalidColumnsSpecified)?);
+                let v = val.as_f64().ok_or(Error::InvalidColumnsSpecified)?;
+                *max = Some(max.map_or(v, |m| m.max(v)));
             }
             RawData::Count(count) => {
                 *count += 1;
@@ -100,7 +103,13 @@ impl RawColumn {
         };
 
         let data = match data {
-            RawData::Sum(v) | RawData::Min(v) | RawData::Max(v) => vec![Value::F64(v)],
+            RawData::Sum(v) | RawData::Min(v) | RawData::Max(v) => {
+                if let Some(v) = v {
+                    vec![Value::F64(v)]
+                } else {
+                    vec![Value::Null]
+                }
+            }
             RawData::Count(count) => vec![Value::UInt64(count as u64)],
             RawData::Avg { sum, count } => {
                 if count == 0 {
@@ -217,7 +226,13 @@ impl AggregatorFormat {
                 for value_row in value_rows {
                     for (val, col) in value_row.into_iter().zip(aggregate_cols.iter_mut()) {
                         let val = match val {
-                            RawData::Sum(v) | RawData::Min(v) | RawData::Max(v) => Value::F64(v),
+                            RawData::Sum(v) | RawData::Min(v) | RawData::Max(v) => {
+                                if let Some(v) = v {
+                                    Value::F64(v)
+                                } else {
+                                    Value::Null
+                                }
+                            }
                             RawData::Count(c) => Value::UInt64(c as u64),
                             RawData::Avg { sum, count } => {
                                 if count == 0 {
@@ -362,9 +377,9 @@ impl Aggregator {
 
 fn create_aggregate_column(alias: Option<String>, source: AggregateFunction) -> RawColumn {
     let (proj, data) = match source {
-        AggregateFunction::Sum(p) => (p, RawData::Sum(0.)),
-        AggregateFunction::Min(p) => (p, RawData::Min(f64::MAX)),
-        AggregateFunction::Max(p) => (p, RawData::Max(f64::MIN)),
+        AggregateFunction::Sum(p) => (p, RawData::Sum(None)),
+        AggregateFunction::Min(p) => (p, RawData::Min(None)),
+        AggregateFunction::Max(p) => (p, RawData::Max(None)),
         AggregateFunction::Count(p) => (p, RawData::Count(0)),
         AggregateFunction::Avg(p) => (p, RawData::Avg { sum: 0., count: 0 }),
     };
