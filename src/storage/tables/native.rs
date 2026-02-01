@@ -55,6 +55,23 @@ impl TryFrom<&TableDef> for NativeStorage<'_, Immutable> {
     }
 }
 
+impl NativeStorage<'_, Immutable> {
+    pub fn try_from_table_def_and_part(
+        table_def: &TableDef,
+        table_part: TablePartInfo,
+    ) -> Result<Self> {
+        let Some(data_lock) = TABLE_DATA.get(table_def) else {
+            return Err(Error::TableNotFound);
+        };
+        let loaded_chunk = Self::gen_next_chunk(table_def, table_part)?;
+        Ok(Self {
+            data_lock: LockFormat::Ref(data_lock),
+            loaded_chunk: Some(loaded_chunk),
+            _marker: PhantomData,
+        })
+    }
+}
+
 impl NativeStorage<'_, Mutable> {
     pub fn try_from_mut(table_def: &TableDef) -> Result<Self> {
         let Some(data_lock) = TABLE_DATA.get_mut(table_def) else {
@@ -199,7 +216,7 @@ impl<Mode: sealed::SealedMode> NativeStorage<'_, Mode> {
         if let Some(loaded_chunk) = &self.loaded_chunk {
             if loaded_chunk.granule_idx + 1 == loaded_chunk.part_info.marks.len() {
                 // currently loaded granule is the last one in part, so we need to load another part
-                let table_config = self.get_ref_data().1;
+                let (table_def, table_config) = self.get_ref_data();
 
                 let Some(next_part_info_idx) = table_config
                     .infos
@@ -214,7 +231,7 @@ impl<Mode: sealed::SealedMode> NativeStorage<'_, Mode> {
                     return Ok(None);
                 };
 
-                self.loaded_chunk = Some(self.gen_next_chunk(next_part_info.clone())?);
+                self.loaded_chunk = Some(Self::gen_next_chunk(table_def, next_part_info.clone())?);
             } else {
                 let Some(loaded_chunk) = &mut self.loaded_chunk.as_mut() else {
                     let msg = format!(
@@ -227,20 +244,18 @@ impl<Mode: sealed::SealedMode> NativeStorage<'_, Mode> {
                 loaded_chunk.granule_idx += 1;
             }
         } else {
-            let table_config = self.get_ref_data().1;
+            let (table_def, table_config) = self.get_ref_data();
 
             let Some(next_part_info) = table_config.infos.first() else {
                 return Ok(None);
             };
 
-            self.loaded_chunk = Some(self.gen_next_chunk(next_part_info.clone())?);
+            self.loaded_chunk = Some(Self::gen_next_chunk(table_def, next_part_info.clone())?);
         }
         Ok(Some(()))
     }
 
-    fn gen_next_chunk(&self, new_part: TablePartInfo) -> Result<LoadedChunk> {
-        let table_def = self.data_lock.table_def();
-
+    fn gen_next_chunk(table_def: &TableDef, new_part: TablePartInfo) -> Result<LoadedChunk> {
         let mut mmaps = Vec::with_capacity(new_part.column_defs.len());
 
         for col_def in &new_part.column_defs {

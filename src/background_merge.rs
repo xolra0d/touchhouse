@@ -43,7 +43,7 @@ impl BackgroundMerge {
 
             let part_1_cols = match Self::load_part_cols(
                 &parts_to_merge.table_def,
-                &parts_to_merge.part_1_info,
+                parts_to_merge.part_1_info.clone(),
             ) {
                 Ok(cols) => cols,
                 Err(error) => {
@@ -58,7 +58,7 @@ impl BackgroundMerge {
             };
             let part_2_cols = match Self::load_part_cols(
                 &parts_to_merge.table_def,
-                &parts_to_merge.part_2_info,
+                parts_to_merge.part_2_info.clone(),
             ) {
                 Ok(cols) => cols,
                 Err(error) => {
@@ -118,7 +118,7 @@ impl BackgroundMerge {
 
     fn load_part_cols(
         table_def: &TableDef,
-        part_info: &TablePartInfo,
+        part_info: TablePartInfo,
     ) -> Result<Vec<PhysicalColumn>> {
         let mut columns: Vec<_> = part_info
             .column_defs
@@ -129,18 +129,20 @@ impl BackgroundMerge {
             })
             .collect();
 
-        let mut storage = NativeStorage::try_from(table_def)?;
-
+        let col_defs_count = part_info.column_defs.len();
+        let marks_count = part_info.marks.len();
         let projections: Vec<_> = part_info
             .column_defs
             .iter()
             .map(|x| Projection::from(x.clone()))
             .collect();
 
-        for _ in 0..part_info.marks.len() {
+        let mut storage = NativeStorage::try_from_table_def_and_part(table_def, part_info)?;
+
+        for _ in 0..marks_count {
             storage.load_next_chunk()?;
 
-            for column_idx in 0..part_info.column_defs.len() {
+            for column_idx in 0..col_defs_count {
                 let data = storage.access_chunk_column(&projections[column_idx])?;
                 let data = data
                     .into_iter()
