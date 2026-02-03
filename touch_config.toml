@@ -5,7 +5,7 @@ storage_directory = "db_files/"
 tcp_socket = "127.0.0.1:7070"
 
 # Max connection at a time
-max_connections = 100
+max_concurrent_connections = 100
 
 # Allowed values:
 # - 1 => Info

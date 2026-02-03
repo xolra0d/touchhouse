@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::AtomicUsize;
 
 use crate::storage::{TableDef, TableMetadata, TablePartInfo};
 
@@ -9,23 +9,25 @@ pub struct TableConfig {
     pub infos: Vec<TablePartInfo>,
 }
 
+/// Stores preloaded each table configuration for quick access.
 pub static TABLE_DATA: std::sync::LazyLock<DashMap<TableDef, TableConfig>> =
     std::sync::LazyLock::new(DashMap::default);
 
-/// Signifies when it's ok to lock `TABLE_DATA` to merge `TablePart`
-pub static DATABASE_LOAD: std::sync::LazyLock<AtomicU32> =
-    std::sync::LazyLock::new(AtomicU32::default);
+/// Signifies when it's ok to lock `TABLE_DATA` to merge `TablePart`.
+/// Decrements is only done through implementing `Drop`.
+pub static DATABASE_LOAD: std::sync::LazyLock<AtomicUsize> =
+    std::sync::LazyLock::new(AtomicUsize::default);
 
-/// RAII guard that decrements `DATABASE_LOAD` on drop.
+/// Guard that decrements `DATABASE_LOAD` on drop.
 ///
 /// Used to track query complexity and automatically release resources when query completes.
 pub struct ComplexityGuard {
-    complexity: u32,
+    complexity: usize,
 }
 
 impl ComplexityGuard {
     /// Creates a new complexity guard with the given complexity value.
-    pub fn new(complexity: u32) -> Self {
+    pub fn new(complexity: usize) -> Self {
         Self { complexity }
     }
 }

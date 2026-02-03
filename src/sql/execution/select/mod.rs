@@ -1,102 +1,147 @@
-mod accumulate_function;
-mod filter;
-mod scan;
+mod aggregator;
 mod strategy;
 
-pub use filter::FilterLogic;
-pub use scan::ScanLogic;
-pub use strategy::Strategy;
-
-use crate::error::{Error, Result};
-use crate::runtime_config::TABLE_DATA;
-use crate::sql::CommandRunner;
-use crate::sql::execution::select::accumulate_function::{AccumulateFn, SumFn};
-use crate::sql::output_table::OutputTable;
-use crate::sql::sql_parser::{Projection, ScanSource};
+use aggregator::Aggregator;
+use strategy::Strategy;
 
 use crate::engines::{EngineConfig, EngineName};
+use crate::error::Result;
+use crate::sql::{AggregateProjection, Projection, ScanSource, SelectNode};
+use crate::sql::{CommandRunner, CompiledFilter};
+use crate::storage::{NativeStorage, OutputColumn, StorageRead, VirtualStorage};
+
 use sqlparser::ast::Expr;
 
-pub struct GranuleMask {
-    pub granule_id: usize,
-    pub mask: Vec<bool>,
+struct QueryParams {
+    projections: Vec<Projection>,
+    filter: Option<Box<Expr>>,
+    aggregate_cols: Vec<AggregateProjection>,
+    group_by: Vec<Projection>,
+    having: Option<Box<Expr>>,
+    order_by: Option<Vec<Vec<Projection>>>,
+    limit: Option<usize>,
+    offset: usize,
 }
 
 impl CommandRunner {
-    pub fn select(
-        table_def: ScanSource,
-        projections: Vec<Projection>,
-        filter_expr: Option<Expr>,
-        order_by_vec: Option<Vec<Vec<Projection>>>,
-        limit: Option<u64>,
-        offset: u64,
-    ) -> Result<OutputTable> {
-        let table_def = match table_def {
-            ScanSource::Table(table_def) => table_def,
-            ScanSource::Subquery(_) => {
-                return Err(Error::Internal(
-                    "Subqueries should've been removed during optimization. Cannot proceed"
-                        .to_string(),
-                ));
+    pub fn select(select: SelectNode) -> Result<Vec<OutputColumn>> {
+        let SelectNode {
+            scan_source,
+            columns,
+            filter,
+            aggregate_cols,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+        } = select;
+
+        let scan_source = match scan_source {
+            ScanSource::Table(table_def) => ScanSource::Table(table_def),
+            ScanSource::Subquery(select_node) => {
+                let output_table_inner = Self::select(*select_node)?;
+
+                ScanSource::Subquery(Box::new(output_table_inner))
             }
         };
-        let Some(table_config) = TABLE_DATA.get(&table_def) else {
-            return Err(Error::TableNotFound);
+
+        let params = QueryParams {
+            projections: columns,
+            filter,
+            aggregate_cols,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
         };
 
-        let optimal_strategy = Strategy::new(
-            limit.map(|x| x as usize),
-            offset as usize,
-            table_config
-                .infos
-                .iter()
-                .map(|x| x.row_count as usize)
-                .sum(),
-            order_by_vec.is_some(),
+        match scan_source {
+            ScanSource::Table(table_def) => {
+                let storage = NativeStorage::try_from(&table_def)?;
+                Self::scan_from_storage(storage, params)
+            }
+            ScanSource::Subquery(virtual_storage) => {
+                let storage = VirtualStorage::from(*virtual_storage);
+                Self::scan_from_storage(storage, params)
+            }
+        }
+    }
+
+    fn scan_from_storage<S: StorageRead>(
+        mut storage: S,
+        params: QueryParams,
+    ) -> Result<Vec<OutputColumn>> {
+        let QueryParams {
+            projections,
+            filter,
+            aggregate_cols,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+        } = params;
+
+        let total_storage_rows = storage.get_total_rows();
+        let strategy = Strategy::new(
+            limit,
+            offset,
+            total_storage_rows,
+            order_by.is_some() || !group_by.is_empty(),
         );
 
-        // filter all marks
-        let row_parts_mask =
-            FilterLogic::filter_marks(&table_config, filter_expr, &table_def, &optimal_strategy)?;
+        let filter = filter
+            .map(|x| CompiledFilter::compile(*x, &storage.get_schema().columns))
+            .transpose()?;
 
-        // scan all rows
-        let proj_len = projections.len();
-        let mut output_columns = ScanLogic::get_archived_values(
-            &table_def,
-            row_parts_mask,
-            projections,
-            vec![Vec::new(); proj_len],
-            &SumFn::new(),
-            table_config.metadata.settings.index_granularity as usize,
-            &optimal_strategy,
-        )?;
+        let mut aggregator = Aggregator::new(projections, aggregate_cols, group_by, having);
 
-        if let Some(order_by_vec) = order_by_vec {
+        while strategy.should_read_next_chunk() && storage.load_next_chunk()?.is_some() {
+            let projs_to_read = aggregator.get_projs_to_read();
+            let mut granule_buffer = Vec::with_capacity(projs_to_read.len());
+
+            for projection in projs_to_read {
+                let col_values = storage.access_chunk_column(projection)?;
+                granule_buffer.push(col_values);
+            }
+
+            if let Some(filter) = &filter {
+                filter.filter_granule(&mut granule_buffer)?;
+            }
+
+            let rows_count = aggregator.append_chunk(granule_buffer)?;
+            strategy.set_lines_read(rows_count);
+        }
+
+        let mut output_columns = aggregator.finalize();
+
+        if let Some(order_by_vec) = order_by {
             for order_by in order_by_vec {
                 // todo: if final is specified, use table engine
                 output_columns = EngineName::default()
                     .get_engine(EngineConfig::default())
-                    .order_columns(
-                        output_columns,
-                        &order_by,
-                        &table_config.metadata.schema.primary_key,
-                    )?;
+                    .order_columns(output_columns, &order_by, &storage.get_schema().primary_key)?;
             }
         }
 
-        for out_col in &mut output_columns {
-            out_col.data.drain(0..(offset as usize));
+        if let Some(col_length) = output_columns.first().map(|x| x.data.len()) {
+            let final_offset = col_length.min(offset);
+            for out_col in &mut output_columns {
+                let _ = out_col.data.drain(0..final_offset);
+            }
         }
 
         if let Some(col_length) = output_columns.first().map(|x| x.data.len())
             && let Some(limit) = limit
         {
-            let final_length = col_length.min(limit as usize);
+            let final_length = col_length.min(limit);
             for out_col in &mut output_columns {
                 out_col.data.truncate(final_length);
             }
         }
 
-        Ok(OutputTable::new(output_columns))
+        Ok(output_columns)
     }
 }

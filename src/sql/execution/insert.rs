@@ -1,7 +1,6 @@
 use crate::error::Result;
-use crate::sql::output_table::OutputTable;
-use crate::sql::{CommandRunner, OutputColumn};
-use crate::storage::{TableDef, TablePart};
+use crate::sql::CommandRunner;
+use crate::storage::{NativeStorage, OutputColumn, PhysicalColumn, StorageWrite as _, TableDef};
 
 impl CommandRunner {
     /// Executes INSERT operation by creating new table part.
@@ -12,13 +11,10 @@ impl CommandRunner {
     /// Returns:
     ///   * Ok: `OutputTable` with success status
     ///   * Error: `TableNotFound` or `CouldNotInsertData` on failure
-    pub fn insert(table_def: &TableDef, columns: Vec<OutputColumn>) -> Result<OutputTable> {
-        let mut table_part = TablePart::try_new(table_def, columns, None)?;
+    pub fn insert(table_def: &TableDef, columns: Vec<PhysicalColumn>) -> Result<Vec<OutputColumn>> {
+        let mut storage = NativeStorage::try_from_mut(table_def)?;
+        storage.insert(columns)?;
 
-        table_part.save_raw(table_def)?;
-
-        table_part.move_to_normal(table_def)?;
-
-        Ok(OutputTable::build_ok())
+        Ok(OutputColumn::build_ok_vec())
     }
 }

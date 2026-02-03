@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::sql::sql_parser::LogicalPlan;
+use crate::sql::LogicalPlan;
 use crate::storage::TableDef;
 use sqlparser::ast::{ObjectName, ObjectNamePart, ObjectType};
 
@@ -19,7 +19,7 @@ impl LogicalPlan {
     ///     4. Database name is not an identifier: `InvalidDatabaseName`.
     ///     5. Unsupported object type: `UnsupportedCommand`.
     pub fn from_drop(
-        object_type: &ObjectType,
+        object_type: ObjectType,
         if_exists: bool,
         names: &[ObjectName],
     ) -> Result<Self> {

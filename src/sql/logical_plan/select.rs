@@ -1,18 +1,19 @@
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
-use crate::sql::sql_parser::{LogicalPlan, Projection, ProjectionValue, ScanSource};
+use crate::sql::{
+    AggregateProjection, LogicalPlan, Projection, ProjectionValue, RawProjection, ScanSource,
+};
 use crate::storage::TableDef;
-use crate::storage::Value;
 
 use sqlparser::ast::{
-    Expr, Ident, LimitClause, OrderByKind, Query, SelectItem, SetExpr, TableFactor,
-    Value as SQLValue,
+    Expr, GroupByExpr, LimitClause, Offset, OrderBy, OrderByKind, Query, SelectItem, SetExpr,
+    TableFactor, Value as SQLValue,
 };
 
 impl LogicalPlan {
     /// Parses SELECT query into a logical plan tree.
     ///
-    /// Builds a tree of `LogicalPlan` nodes: Scan -> Filter -> Projection -> OrderBy -> Limit.
+    /// Builds a tree of `LogicalPlan` nodes: Scan -> Filter -> Projection -> `OrderBy` -> Limit.
     ///
     /// Returns:
     ///   * Ok when:
@@ -34,54 +35,84 @@ impl LogicalPlan {
             ));
         };
 
+        Self::validate_from_clause(select)?;
+
+        let scan_source = Self::build_scan_source(&select.from[0])?;
+        let mut plan = Self::Scan {
+            source: scan_source,
+        };
+
+        let available_projections = Self::extract_columns_from_plan(&plan)?;
+        let (read_columns, aggregate_projections) =
+            Self::parse_projections(&select.projection, &available_projections)?;
+
+        plan = Self::apply_filter(plan, select.selection.as_ref());
+        plan = Self::apply_projection(plan, read_columns.clone());
+        plan = Self::apply_group_by(
+            plan,
+            &select.group_by,
+            read_columns.clone(),
+            aggregate_projections,
+            &available_projections,
+        )?;
+        plan = Self::apply_having(plan, select.having.as_ref());
+        plan = Self::apply_order_by(plan, query.order_by.as_ref(), &read_columns)?;
+        plan = Self::apply_limit(plan, query.limit_clause.as_ref())?;
+
+        Ok(plan)
+    }
+
+    fn validate_from_clause(select: &sqlparser::ast::Select) -> Result<()> {
         if select.from.len() != 1 {
             return Err(Error::UnsupportedCommand(
                 "Currently do not support multiple table selects".to_string(),
             ));
         }
-        let table = &select.from[0];
 
+        let table = &select.from[0];
         if !table.joins.is_empty() {
             return Err(Error::UnsupportedCommand(
                 "JOIN clauses are not currently supported".to_string(),
             ));
         }
-        let scan_source = match &table.relation {
+
+        Ok(())
+    }
+
+    fn build_scan_source(
+        table: &sqlparser::ast::TableWithJoins,
+    ) -> Result<ScanSource<LogicalPlan>> {
+        match &table.relation {
             TableFactor::Table { name, .. } => {
                 let table_def = TableDef::try_from(name)?;
-                ScanSource::Table(table_def)
+                Ok(ScanSource::Table(table_def))
             }
             TableFactor::Derived { subquery, .. } => {
                 let subquery_plan = Self::from_query(subquery)?;
-                ScanSource::Subquery(Box::new(subquery_plan))
+                Ok(ScanSource::Subquery(Box::new(subquery_plan)))
             }
-            _ => {
-                return Err(Error::UnsupportedCommand(
-                    "Only simple table references and subqueries are supported".to_string(),
-                ));
-            }
-        };
+            _ => Err(Error::UnsupportedCommand(
+                "Only simple table references and subqueries are supported".to_string(),
+            )),
+        }
+    }
 
-        if select.projection.is_empty() {
+    fn parse_projections(
+        projection_items: &[SelectItem],
+        available_projections: &Vec<Projection>,
+    ) -> Result<(Vec<Projection>, Vec<AggregateProjection>)> {
+        if projection_items.is_empty() {
             return Err(Error::UnsupportedCommand(
                 "No projection specified.".to_string(),
             ));
         }
 
-        let mut plan = Self::Scan {
-            source: scan_source,
-        };
-
-        let mut read_columns: Vec<Projection> = Vec::with_capacity(select.projection.len());
-
-        let available_columns = Self::extract_columns_from_plan(&plan)?;
-
-        // Allow either
-        // * Wildcard only, meaning all columns.
-        // * Wildcard at the end, meaning all columns which are not specified.
-        // * No wildcard.
+        let mut read_columns: Vec<Projection> = Vec::with_capacity(projection_items.len() / 2);
+        let mut aggregate_projections: Vec<AggregateProjection> =
+            Vec::with_capacity(projection_items.len() / 2);
         let mut wildcard = None;
-        for (idx, projection) in select.projection.iter().enumerate() {
+
+        for (idx, projection) in projection_items.iter().enumerate() {
             match projection {
                 SelectItem::Wildcard(_) => {
                     if wildcard.is_some() {
@@ -92,72 +123,19 @@ impl LogicalPlan {
                     wildcard = Some(idx);
                 }
                 SelectItem::UnnamedExpr(expr) => {
-                    if wildcard.is_some() {
-                        return Err(Error::UnsupportedCommand(
-                            "Columns after wildcard are not supported".to_string(),
-                        ));
-                    }
-
-                    let projection = match expr {
-                        Expr::Identifier(ident) => {
-                            let projection = parse_proj_ident(ident, &available_columns, None)?;
-                            if read_columns.contains(&projection) {
-                                return Err(Error::DuplicateColumn(ident.value.clone())); // todo: remove
-                            }
-                            projection
-                        }
-                        Expr::Value(value) => {
-                            let value = Value::try_from_untyped(value.value.clone())?;
-                            Projection {
-                                source: ProjectionValue::Value(value),
-                                alias: None,
-                            }
-                        }
-                        _ => {
-                            return Err(Error::UnsupportedCommand(
-                                "Only column identifiers and values are supported in projections"
-                                    .to_string(),
-                            ));
-                        }
-                    };
-
-                    read_columns.push(projection);
+                    Self::validate_no_wildcard_before(wildcard)?;
+                    let (proj, aggr) =
+                        Self::parse_projection_expr(expr, None, available_projections)?;
+                    Self::add_projection(proj, aggr, &mut read_columns, &mut aggregate_projections);
                 }
                 SelectItem::ExprWithAlias { expr, alias } => {
-                    if wildcard.is_some() {
-                        return Err(Error::UnsupportedCommand(
-                            "Columns after wildcard are not supported".to_string(),
-                        ));
-                    }
-
-                    let projection = match expr {
-                        Expr::Identifier(ident) => {
-                            let projection = parse_proj_ident(
-                                ident,
-                                &available_columns,
-                                Some(alias.value.clone()),
-                            )?;
-                            if read_columns.contains(&projection) {
-                                return Err(Error::DuplicateColumn(ident.value.clone()));
-                            }
-
-                            projection
-                        }
-                        Expr::Value(value) => {
-                            let value = Value::try_from_untyped(value.value.clone())?;
-                            Projection {
-                                source: ProjectionValue::Value(value),
-                                alias: Some(alias.value.clone()),
-                            }
-                        }
-                        _ => {
-                            return Err(Error::UnsupportedCommand(
-                                "Only column identifiers are supported in projections".to_string(),
-                            ));
-                        }
-                    };
-
-                    read_columns.push(projection);
+                    Self::validate_no_wildcard_before(wildcard)?;
+                    let (proj, aggr) = Self::parse_projection_expr(
+                        expr,
+                        Some(alias.value.clone()),
+                        available_projections,
+                    )?;
+                    Self::add_projection(proj, aggr, &mut read_columns, &mut aggregate_projections);
                 }
                 SelectItem::QualifiedWildcard(..) => {
                     return Err(Error::UnsupportedCommand(
@@ -167,112 +145,285 @@ impl LogicalPlan {
             }
         }
 
+        Self::expand_wildcard(wildcard, &mut read_columns, available_projections);
+
+        Ok((read_columns, aggregate_projections))
+    }
+
+    fn validate_no_wildcard_before(wildcard: Option<usize>) -> Result<()> {
+        if wildcard.is_some() {
+            return Err(Error::UnsupportedCommand(
+                "Columns after wildcard are not supported".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn parse_projection_expr(
+        expr: &Expr,
+        alias: Option<String>,
+        available_projections: &[Projection],
+    ) -> Result<(Option<Projection>, Option<AggregateProjection>)> {
+        let mut raw_projection = RawProjection::try_from(expr, available_projections)?;
+        if let Some(alias) = alias {
+            raw_projection.set_alias(alias);
+        }
+
+        match raw_projection {
+            RawProjection::Projection(projection) => Ok((Some(projection), None)),
+            RawProjection::AggregateProjection(projection) => Ok((None, Some(projection))),
+        }
+    }
+
+    fn add_projection(
+        proj: Option<Projection>,
+        aggr: Option<AggregateProjection>,
+        read_columns: &mut Vec<Projection>,
+        aggregate_projections: &mut Vec<AggregateProjection>,
+    ) {
+        if let Some(proj) = proj {
+            read_columns.push(proj);
+        }
+        if let Some(aggr) = aggr {
+            aggregate_projections.push(aggr);
+        }
+    }
+
+    fn expand_wildcard(
+        wildcard: Option<usize>,
+        read_columns: &mut Vec<Projection>,
+        available_projections: &Vec<Projection>,
+    ) {
         if let Some(idx) = wildcard {
             if idx == 0 {
-                read_columns.clone_from(&available_columns);
+                read_columns.clone_from(available_projections);
             } else {
-                for proj in &available_columns {
+                for proj in available_projections {
                     if !read_columns.contains(proj) {
                         read_columns.push(proj.clone());
                     }
                 }
             }
         }
+    }
 
-        if let Some(ref selection) = select.selection {
-            plan = LogicalPlan::Filter {
-                expr: Box::new(selection.clone()),
+    fn apply_filter(plan: LogicalPlan, selection: Option<&Expr>) -> LogicalPlan {
+        match selection {
+            Some(expr) => LogicalPlan::Filter {
+                expr: Box::new(expr.clone()),
                 plan: Box::new(plan),
+            },
+            None => plan,
+        }
+    }
+
+    fn apply_projection(plan: LogicalPlan, projs: Vec<Projection>) -> LogicalPlan {
+        LogicalPlan::Projection {
+            projs,
+            plan: Box::new(plan),
+        }
+    }
+
+    fn apply_group_by(
+        plan: LogicalPlan,
+        group_by: &GroupByExpr,
+        read_columns: Vec<Projection>,
+        aggregate_projections: Vec<AggregateProjection>,
+        available_projections: &[Projection],
+    ) -> Result<LogicalPlan> {
+        match group_by {
+            GroupByExpr::All(modifiers) => {
+                Self::validate_no_modifiers(modifiers)?;
+                Ok(LogicalPlan::Aggregate {
+                    aggr_proj: aggregate_projections,
+                    group_by: read_columns,
+                    plan: Box::new(plan),
+                })
+            }
+            GroupByExpr::Expressions(expressions, modifiers) => {
+                Self::validate_no_modifiers(modifiers)?;
+
+                if expressions.is_empty() && aggregate_projections.is_empty() {
+                    return Ok(plan);
+                }
+
+                let group_by =
+                    Self::parse_group_by_expressions(expressions, available_projections)?;
+
+                if group_by.is_empty()
+                    && !read_columns.is_empty()
+                    && !aggregate_projections.is_empty()
+                {
+                    return Err(Error::UnsupportedCommand(
+                        "Cannot mix regular columns and aggregate functions without GROUP BY clause".to_string(),
+                    ));
+                }
+
+                Self::validate_all_columns_in_group_by(&read_columns, &group_by)?;
+
+                Ok(LogicalPlan::Aggregate {
+                    aggr_proj: aggregate_projections,
+                    group_by,
+                    plan: Box::new(plan),
+                })
+            }
+        }
+    }
+
+    fn validate_no_modifiers(modifiers: &[sqlparser::ast::GroupByWithModifier]) -> Result<()> {
+        if !modifiers.is_empty() {
+            return Err(Error::UnsupportedCommand(format!(
+                "Modifiers ({modifiers:?}) are not supported in GROUP BY clause"
+            )));
+        }
+        Ok(())
+    }
+
+    fn parse_group_by_expressions(
+        expressions: &[Expr],
+        available_projections: &[Projection],
+    ) -> Result<Vec<Projection>> {
+        let mut group_by = Vec::with_capacity(expressions.len());
+
+        for expr in expressions {
+            let proj = match RawProjection::try_from(expr, available_projections)? {
+                RawProjection::Projection(proj) => proj,
+                RawProjection::AggregateProjection(aggr_proj) => {
+                    return Err(Error::InvalidSource(format!(
+                        "Expected projection in GROUP BY, got ({aggr_proj:?}) instead.",
+                    )));
+                }
             };
+            group_by.push(proj);
         }
 
-        plan = LogicalPlan::Projection {
-            columns: read_columns.clone(),
-            plan: Box::new(plan),
+        Ok(group_by)
+    }
+
+    fn validate_all_columns_in_group_by(
+        read_columns: &[Projection],
+        group_by: &[Projection],
+    ) -> Result<()> {
+        if let Some(proj) = read_columns.iter().find(|proj| !group_by.contains(proj)) {
+            return Err(Error::ColumnNotInGroupBy(proj.to_string()));
+        }
+        Ok(())
+    }
+
+    fn apply_having(plan: LogicalPlan, having: Option<&Expr>) -> LogicalPlan {
+        match having {
+            Some(expr) => LogicalPlan::Having {
+                expr: Box::new(expr.clone()),
+                plan: Box::new(plan),
+            },
+            None => plan,
+        }
+    }
+
+    fn apply_order_by(
+        plan: LogicalPlan,
+        order_by: Option<&OrderBy>,
+        read_columns: &[Projection],
+    ) -> Result<LogicalPlan> {
+        let Some(order_by) = order_by else {
+            return Ok(plan);
         };
 
-        if let Some(order_by) = &query.order_by {
-            match &order_by.kind {
-                OrderByKind::All(_params) => {
-                    plan = LogicalPlan::OrderBy {
-                        column_defs: vec![read_columns], // todo save as Cow<> of projection maybe, or even indexes?
-                        plan: Box::new(plan),
-                    };
-                }
-                OrderByKind::Expressions(order_by_given) => {
-                    let mut order_by_all = Vec::with_capacity(order_by_given.len());
-                    for order_by_expr in order_by_given {
-                        let order_by_cols =
-                            Self::parse_order_by(&order_by_expr.expr, &available_columns)?; // OrderBy cols is interpreted in the same way as PK in `CREATE TABLE`
-                        order_by_all.push(order_by_cols);
-                    }
-
-                    plan = LogicalPlan::OrderBy {
-                        column_defs: order_by_all,
-                        plan: Box::new(plan),
-                    };
-                }
+        let projs = match &order_by.kind {
+            OrderByKind::All(_params) => vec![read_columns.to_vec()],
+            OrderByKind::Expressions(order_by_given) => {
+                Self::parse_order_by_expressions(order_by_given, read_columns)?
             }
+        };
+
+        Ok(LogicalPlan::OrderBy {
+            projs,
+            plan: Box::new(plan),
+        })
+    }
+
+    fn parse_order_by_expressions(
+        order_by_given: &[sqlparser::ast::OrderByExpr],
+        available_projections: &[Projection],
+    ) -> Result<Vec<Vec<Projection>>> {
+        let mut order_by_all = Vec::with_capacity(order_by_given.len());
+        for order_by_expr in order_by_given {
+            let order_by_cols = Self::parse_order_by(&order_by_expr.expr, available_projections)?;
+            order_by_all.push(order_by_cols);
         }
-        if let Some(limit_clause) = &query.limit_clause {
-            let LimitClause::LimitOffset {
-                limit: limit_expr,
-                offset: offset_expr,
-                ..
-            } = limit_clause
-            else {
-                return Err(Error::InvalidLimitValue(
-                    "Only LIMIT OFFSET clause is supported".to_string(),
-                ));
-            };
+        Ok(order_by_all)
+    }
 
-            let mut limit = None;
-            let mut offset = 0;
+    fn apply_limit(plan: LogicalPlan, limit_clause: Option<&LimitClause>) -> Result<LogicalPlan> {
+        let Some(limit_clause) = limit_clause else {
+            return Ok(plan);
+        };
 
-            if let Some(limit_expr) = limit_expr {
-                let Expr::Value(limit_expr) = &limit_expr else {
-                    return Err(Error::InvalidLimitValue(
-                        "LIMIT must be a literal value".to_string(),
-                    ));
-                };
-                let SQLValue::Number(limit_expr, _) = &limit_expr.value else {
-                    return Err(Error::InvalidLimitValue(
-                        "LIMIT must be a number".to_string(),
-                    ));
-                };
+        let LimitClause::LimitOffset {
+            limit: limit_expr,
+            offset: offset_expr,
+            ..
+        } = limit_clause
+        else {
+            return Err(Error::InvalidLimitValue(
+                "Only LIMIT OFFSET clause is supported".to_string(),
+            ));
+        };
 
-                limit = Some(
-                    limit_expr
-                        .parse()
-                        .map_err(|_| Error::InvalidLimitValue(limit_expr.clone()))?,
-                );
-            }
+        let limit = Self::parse_limit_value(limit_expr.as_ref())?;
+        let offset = Self::parse_offset_value(offset_expr.as_ref())?;
 
-            if let Some(offset_expr) = offset_expr {
-                let Expr::Value(offset_expr) = &offset_expr.value else {
-                    return Err(Error::InvalidLimitValue(
-                        "OFFSET must be a literal value".to_string(),
-                    ));
-                };
-                let SQLValue::Number(offset_expr, _) = &offset_expr.value else {
-                    return Err(Error::InvalidLimitValue(
-                        "OFFSET must be a number".to_string(),
-                    ));
-                };
+        Ok(LogicalPlan::Limit {
+            limit,
+            offset,
+            plan: Box::new(plan),
+        })
+    }
 
-                offset = offset_expr
-                    .parse()
-                    .map_err(|_| Error::InvalidLimitValue(offset_expr.clone()))?;
-            }
+    fn parse_limit_value(limit_expr: Option<&Expr>) -> Result<Option<usize>> {
+        let Some(limit_expr) = limit_expr else {
+            return Ok(None);
+        };
 
-            plan = LogicalPlan::Limit {
-                limit,
-                offset,
-                plan: Box::new(plan),
-            };
-        }
+        let Expr::Value(limit_expr) = limit_expr else {
+            return Err(Error::InvalidLimitValue(
+                "LIMIT must be a literal value".to_string(),
+            ));
+        };
 
-        Ok(plan)
+        let SQLValue::Number(limit_expr, _) = &limit_expr.value else {
+            return Err(Error::InvalidLimitValue(
+                "LIMIT must be a number".to_string(),
+            ));
+        };
+
+        let limit = limit_expr
+            .parse()
+            .map_err(|_| Error::InvalidLimitValue(limit_expr.clone()))?;
+
+        Ok(Some(limit))
+    }
+
+    fn parse_offset_value(offset_expr: Option<&Offset>) -> Result<usize> {
+        let Some(offset_expr) = offset_expr else {
+            return Ok(0);
+        };
+
+        let Expr::Value(offset_expr) = &offset_expr.value else {
+            return Err(Error::InvalidLimitValue(
+                "OFFSET must be a literal value".to_string(),
+            ));
+        };
+
+        let SQLValue::Number(offset_expr, _) = &offset_expr.value else {
+            return Err(Error::InvalidLimitValue(
+                "OFFSET must be a number".to_string(),
+            ));
+        };
+
+        offset_expr
+            .parse()
+            .map_err(|_| Error::InvalidLimitValue(offset_expr.clone()))
     }
 
     /// Extracts column definitions from a logical plan.
@@ -290,7 +441,7 @@ impl LogicalPlan {
     ///     2. Unsupported plan type: `UnsupportedCommand`.
     fn extract_columns_from_plan(plan: &LogicalPlan) -> Result<Vec<Projection>> {
         match plan {
-            LogicalPlan::Projection { columns, .. } => Ok(columns.clone()),
+            LogicalPlan::Projection { projs: columns, .. } => Ok(columns.clone()),
             LogicalPlan::Filter { plan, .. }
             | LogicalPlan::OrderBy { plan, .. }
             | LogicalPlan::Limit { plan, .. } => Self::extract_columns_from_plan(plan),
@@ -331,68 +482,33 @@ impl LogicalPlan {
     //     3. If column name is not an identifier: `InvalidOrderBy`.
     //     4. If column, not found in all columns, is found in ORDER BY: `InvalidOrderBy`.
     //     5. If the same column is added: `InvalidOrderBy`.
-    pub fn parse_order_by(
-        primary_key: &Expr,
-        projections: &[Projection],
-    ) -> Result<Vec<Projection>> {
-        match primary_key {
-            Expr::Identifier(primary_key) => {
-                parse_proj_ident(primary_key, projections, None).map(|x| vec![x])
+    pub fn parse_order_by(order_by: &Expr, projections: &[Projection]) -> Result<Vec<Projection>> {
+        match order_by {
+            Expr::Identifier(order_by) => {
+                Projection::try_from_ident(order_by, projections).map(|x| vec![x])
             }
-            Expr::Tuple(primary_keys) => {
-                let mut primary_key = Vec::with_capacity(primary_keys.len());
-                for key in primary_keys {
+            Expr::Tuple(order_by) => {
+                let mut order_by_total = Vec::with_capacity(order_by.len());
+                for key in order_by {
                     let Expr::Identifier(ident) = key else {
-                        return Err(Error::InvalidPrimaryKey(format!(
-                            "Invalid specifier: {key}"
-                        )));
+                        return Err(Error::InvalidOrderBy(format!("Invalid specifier: {key}")));
                     };
-                    primary_key.push(parse_proj_ident(ident, projections, None)?);
+                    order_by_total.push(Projection::try_from_ident(ident, projections)?);
                 }
 
-                Ok(primary_key)
+                Ok(order_by_total)
             }
-            Expr::Nested(primary_key) => {
+            Expr::Nested(order_by) => {
                 // Added, because `sqlparser-rs` believes single element tuples are `Expr::Nested`
-                if let Expr::Identifier(primary_key) = primary_key.as_ref() {
-                    parse_proj_ident(primary_key, projections, None).map(|x| vec![x])
+                if let Expr::Identifier(order_by) = order_by.as_ref() {
+                    Projection::try_from_ident(order_by, projections).map(|x| vec![x])
                 } else {
-                    Err(Error::InvalidPrimaryKey(
+                    Err(Error::InvalidOrderBy(
                         "Nested primary keys are unsupported".to_string(),
                     ))
                 }
             }
-            _ => Err(Error::InvalidPrimaryKey(format!(
-                "Invalid primary key: {primary_key}"
-            ))),
+            _ => Err(Error::InvalidOrderBy(order_by.to_string())),
         }
     }
-}
-
-fn parse_proj_ident(
-    ident: &Ident,
-    projections: &[Projection],
-    alias: Option<String>,
-) -> Result<Projection> {
-    let Some(mut projection) = projections
-        .iter()
-        .find(|proj| {
-            if let Some(alias) = &proj.alias {
-                *alias == ident.value
-            } else if let ProjectionValue::ColumnDef(column_def) = &proj.source {
-                column_def.name == ident.value
-            } else {
-                false
-            }
-        })
-        .cloned()
-    else {
-        return Err(Error::ColumnNotFound(ident.to_string()));
-    };
-
-    if let Some(alias) = alias {
-        projection.alias = Some(alias);
-    }
-
-    Ok(projection)
 }

@@ -1,10 +1,11 @@
 use crate::config::CONFIG;
 use crate::error::{Error, Result};
 use crate::runtime_config::{TABLE_DATA, TableConfig};
-use crate::sql::output_table::OutputTable;
-use crate::sql::{CommandRunner, validate_name};
-use crate::storage::{ColumnDef, TableDef};
-use crate::storage::{TableMetadata, TableSchema, TableSettings};
+use crate::sql::CommandRunner;
+use crate::storage::{
+    ColumnDef, OutputColumn, TableDef, TableMetadata, TableSchema, TableSettings,
+};
+
 use dashmap::Entry;
 use log::error;
 
@@ -14,19 +15,18 @@ impl CommandRunner {
     /// Returns:
     ///   * Ok: `OutputTable` with success status
     ///   * Error: `InvalidDatabaseName` if directory creation fails
-    pub fn create_database(name: String) -> Result<OutputTable> {
-        if !validate_name(&name) {
-            return Err(Error::InvalidDatabaseName);
+    pub fn create_database(name: String, if_not_exists: bool) -> Result<Vec<OutputColumn>> {
+        match std::fs::create_dir(CONFIG.get_db_dir().join(name)) {
+            Ok(()) => Ok(OutputColumn::build_ok_vec()),
+            Err(error) => match error.kind() {
+                std::io::ErrorKind::AlreadyExists if if_not_exists => {
+                    Ok(OutputColumn::build_ok_vec())
+                }
+                std::io::ErrorKind::AlreadyExists => Err(Error::DatabaseAlreadyExists),
+                std::io::ErrorKind::PermissionDenied => Err(Error::PermissionDenied),
+                _ => Err(Error::InvalidDatabaseName),
+            },
         }
-        std::fs::create_dir(CONFIG.get_db_dir().join(name)).map_err(|error| {
-            match error.kind() {
-                std::io::ErrorKind::AlreadyExists => Error::DatabaseAlreadyExists,
-                std::io::ErrorKind::PermissionDenied => Error::PermissionDenied,
-                _ => Error::InvalidDatabaseName,
-            }
-        })?;
-
-        Ok(OutputTable::build_ok())
     }
 
     /// Creates a table.
@@ -38,11 +38,12 @@ impl CommandRunner {
     ///   * Error: `TableEntryAlreadyExists` or `CouldNotInsertData` on failure
     pub fn create_table(
         table_def: &TableDef,
+        if_not_exists: bool,
         columns: Vec<ColumnDef>,
         settings: TableSettings,
         order_by: Vec<ColumnDef>,
         primary_key: Vec<ColumnDef>,
-    ) -> Result<OutputTable> {
+    ) -> Result<Vec<OutputColumn>> {
         let table_schema = TableSchema {
             columns,
             order_by,
@@ -51,9 +52,12 @@ impl CommandRunner {
         let table_metadata = TableMetadata::try_new(table_schema, settings)?;
 
         let table_path = table_def.get_path();
+
         // will lock for mutual access
-        let Entry::Vacant(entry) = TABLE_DATA.entry(table_def.clone()) else {
-            return Err(Error::TableAlreadyExists);
+        let entry = match TABLE_DATA.entry(table_def.clone()) {
+            Entry::Vacant(entry) => entry,
+            Entry::Occupied(..) if if_not_exists => return Ok(OutputColumn::build_ok_vec()),
+            Entry::Occupied(..) => return Err(Error::TableAlreadyExists),
         };
 
         std::fs::create_dir(&table_path).map_err(|error| {
@@ -73,6 +77,6 @@ impl CommandRunner {
 
         entry.insert(table_config);
 
-        Ok(OutputTable::build_ok())
+        Ok(OutputColumn::build_ok_vec())
     }
 }

@@ -2,18 +2,15 @@ mod command_runner;
 mod compiled_filter;
 mod execution;
 mod logical_plan;
-mod output_table;
 mod plan_optimization;
 mod sql_parser;
 
 pub use command_runner::CommandRunner;
-pub use output_table::{OutputColumn, OutputTable};
-pub use sql_parser::{Projection, ProjectionValue};
-
-use crate::error::{Error, Result};
-use crate::storage::ColumnDef;
-
-use sqlparser::ast::Ident;
+pub use compiled_filter::{BinOp, CompiledFilter};
+pub use sql_parser::{
+    AggregateProjection, LogicalPlan, PhysicalPlan, Projection, ProjectionValue, RawProjection,
+    ScanSource, SelectNode,
+};
 
 /// Validates the name of fields, databases, columns.
 ///
@@ -25,22 +22,6 @@ pub fn validate_name(name: &str) -> bool {
         && name
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
-/// Parses an identifier and finds matching column definition.
-///
-/// Returns:
-///   * Ok: `ColumnDef` when column with matching name is found.
-///   * Error: `ColumnNotFound` when no matching column exists.
-pub fn parse_column_def_ident(ident: &Ident, columns: &[ColumnDef]) -> Result<ColumnDef> {
-    if let Some(column_def) = columns.iter().find(|col| col.name == ident.value) {
-        Ok(column_def.clone())
-    } else {
-        Err(Error::ColumnNotFound(format!(
-            "Column specified ({}) was not found",
-            ident.value
-        )))
-    }
 }
 
 #[cfg(test)]

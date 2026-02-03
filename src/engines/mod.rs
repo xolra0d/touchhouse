@@ -4,9 +4,8 @@ mod replacing_merge_tree;
 use crate::engines::merge_tree::MergeTreeEngine;
 use crate::engines::replacing_merge_tree::ReplacingMergeTreeEngine;
 use crate::error::{Error, Result};
-use crate::sql::OutputColumn;
 use crate::sql::Projection;
-use crate::storage::ColumnDef;
+use crate::storage::{ColumnDef, OutputColumn};
 
 use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 

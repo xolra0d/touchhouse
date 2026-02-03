@@ -1,15 +1,13 @@
 use sqlparser::ast::{
-    ColumnOption, ColumnOptionDef, CreateTable, CreateTableOptions, Expr, OneOrManyWithParens,
-    SqlOption,
+    ColumnOption, ColumnOptionDef, CreateTable, CreateTableOptions, Expr, Ident,
+    OneOrManyWithParens, SqlOption,
 };
 use std::collections::HashSet;
 
 use crate::engines::EngineName;
 use crate::error::{Error, Result};
-use crate::sql::sql_parser::LogicalPlan;
-use crate::sql::{parse_column_def_ident, validate_name};
-use crate::storage::table_metadata::TableSettings;
-use crate::storage::{ColumnDef, Constraints, TableDef, Value, ValueType};
+use crate::sql::{LogicalPlan, validate_name};
+use crate::storage::{ColumnDef, Constraints, TableDef, TableSettings, Value, ValueType};
 
 impl LogicalPlan {
     /// Create a table as directory and .metadata file.
@@ -31,14 +29,6 @@ impl LogicalPlan {
 
         if !validate_name(&table_def.table) {
             return Err(Error::InvalidTableName);
-        }
-
-        let table_exists = table_def.exists_or_err();
-        if create_table.if_not_exists && table_exists.is_ok() {
-            return Ok(Self::Skip);
-        }
-        if table_exists.is_ok() {
-            return Err(Error::TableAlreadyExists);
         }
 
         if create_table.columns.is_empty() {
@@ -104,6 +94,7 @@ impl LogicalPlan {
 
         Ok(Self::CreateTable {
             name: table_def,
+            if_not_exists: create_table.if_not_exists,
             columns,
             settings,
             order_by,
@@ -286,6 +277,22 @@ impl LogicalPlan {
             default,
             compression_type,
         })
+    }
+}
+
+/// Parses an identifier and finds matching column definition.
+///
+/// Returns:
+///   * Ok: `ColumnDef` when column with matching name is found.
+///   * Error: `ColumnNotFound` when no matching column exists.
+fn parse_column_def_ident(ident: &Ident, columns: &[ColumnDef]) -> Result<ColumnDef> {
+    if let Some(column_def) = columns.iter().find(|col| col.name == ident.value) {
+        Ok(column_def.clone())
+    } else {
+        Err(Error::ColumnNotFound(format!(
+            "Column specified ({}) was not found",
+            ident.value
+        )))
     }
 }
 

@@ -1,11 +1,11 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::io::ErrorKind;
 use std::net::SocketAddrV4;
 use std::path::{Path, PathBuf};
 
 /// Global static to access server configuration
 pub static CONFIG: std::sync::LazyLock<Config> = std::sync::LazyLock::new(Config::build);
-const CONFIG_FILENAME: &str = "touch_config.toml";
+const DEFAULT_CONFIG_FILENAME: &str = "touch_config.toml";
 const DEFAULT_CONFIG_STR: &str = r#"# Storage directory
 storage_directory = "db_files/"
 
@@ -13,7 +13,7 @@ storage_directory = "db_files/"
 tcp_socket = "127.0.0.1:7070"
 
 # Max connection at a time
-max_connections = 100
+max_concurrent_connections = 100
 
 # Allowed values:
 # - 1 => Info
@@ -25,7 +25,7 @@ log_level = 1
 background_merge_available_under = 5"#;
 
 /// Server configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     /// Socket for running TCP connection
     tcp_socket: SocketAddrV4,
@@ -38,9 +38,9 @@ pub struct Config {
     /// - 3 => Error
     log_level: u8,
     /// Max concurrent connections.
-    max_connections: usize,
+    max_concurrent_connections: usize,
     /// Signifies when database can do background merges of parts, depending on database load
-    background_merge_available_under: u32,
+    background_merge_available_under: usize,
 }
 
 impl Config {
@@ -65,16 +65,17 @@ impl Config {
 
     /// Get max connections from configuration
     pub const fn get_max_connections(&self) -> usize {
-        self.max_connections
+        self.max_concurrent_connections
     }
 
     /// Provides the background merge availability threshold.
     ///
-    /// The threshold value used to determine when background merges are allowed.
-    pub const fn get_background_merge_available_under(&self) -> u32 {
+    /// The threshold value used to determine when background merges are allowed
+    /// meaning, that database is under low load
+    pub const fn get_background_merge_available_under(&self) -> usize {
         self.background_merge_available_under
     }
-    /// Ensures that directory exists and is indeed directory. Creates one, if not exists
+    /// Ensures that storage directory exists and is indeed directory. Creates one, if not exists
     ///
     /// # Panics:
     ///
@@ -82,17 +83,20 @@ impl Config {
     /// 2. When supplied invalid name
     /// 3. Any `std::fs::create_dir_all()` error
     /// 4. When path already exists, but is not a directory
-    fn ensure_directory_exists(dir: &PathBuf) {
+    fn ensure_storage_directory_exists(dir: &PathBuf) {
         std::fs::create_dir_all(dir).unwrap_or_else(|error| match error.kind() {
             ErrorKind::PermissionDenied => {
-                panic!("Permission denied to create database")
+                panic!("Permission denied to create database: {error:?}")
             }
-            ErrorKind::InvalidInput => panic!("Invalid database name"),
-            e => panic!("Invalid directory: {e:?}"),
+            ErrorKind::InvalidInput => panic!("Invalid database name: {error:?}"),
+            _ => panic!("Invalid directory: {error:?}"),
         });
 
-        std::fs::exists(dir)
-            .unwrap_or_else(|_| panic!("Can't check existence of database directory"));
+        if !std::fs::exists(dir)
+            .unwrap_or_else(|error| panic!("Can't check existence of database directory: {error}"))
+        {
+            panic!("Could not create storage directory ({})", dir.display());
+        }
 
         assert!(
             dir.is_dir(),
@@ -110,8 +114,9 @@ impl Config {
     /// 2. When config file does not exist
     /// 2. When config file is invalid toml
     pub fn build() -> Self {
-        let config_path = &std::env::var("CONFIG_PATH").unwrap_or(CONFIG_FILENAME.to_string());
-        let config_path = Path::new(config_path);
+        let config_path =
+            std::env::var("CONFIG_PATH").unwrap_or(DEFAULT_CONFIG_FILENAME.to_string());
+        let config_path = Path::new(&config_path);
 
         if !config_path.exists() {
             std::fs::write(config_path, DEFAULT_CONFIG_STR)
@@ -121,7 +126,7 @@ impl Config {
         let config_file = std::fs::read_to_string(config_path).expect("Couldn't read config file");
         let raw_config: Self = toml::from_str(&config_file).expect("Invalid config file");
 
-        Self::ensure_directory_exists(&raw_config.storage_directory);
+        Self::ensure_storage_directory_exists(&raw_config.storage_directory);
 
         raw_config
     }

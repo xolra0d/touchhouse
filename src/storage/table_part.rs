@@ -1,14 +1,13 @@
 use crate::engines::EngineConfig;
 use crate::error::{Error, Result};
-use crate::runtime_config::{TABLE_DATA, TableConfig};
+use crate::sql::{Projection, ProjectionValue};
 use crate::storage::compression::{compress_bytes, decompress_bytes};
-use crate::storage::table_metadata::TableMetadata;
-use crate::storage::{Column, ColumnDef, CompressionType, TableDef, Value};
+use crate::storage::{
+    ColumnDef, CompressionType, OutputColumn, PhysicalColumn, TableDef, TableMetadata, Value,
+};
 
-use crate::sql::{OutputColumn, Projection, ProjectionValue};
-use log::{info, warn};
 use rkyv::{Archive as RkyvArchive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 pub const MAGIC_BYTES_COLUMN: &[u8] = b"THDATA".as_slice();
@@ -31,7 +30,7 @@ pub struct Mark {
 }
 
 /// Immutable table part information.
-#[derive(Debug, Clone, RkyvSerialize, RkyvArchive, RkyvDeserialize)]
+#[derive(Debug, Clone, PartialEq, RkyvSerialize, RkyvArchive, RkyvDeserialize)]
 pub struct TablePartInfo {
     pub name: String,
     pub row_count: u64, // max rows per tablepart = 18_446_744_073_709_551_615
@@ -76,7 +75,8 @@ impl TablePartInfo {
             )));
         }
 
-        let compressed = &bytes[(mark_info.start as usize)..(mark_info.end as usize)];
+        let compressed = &bytes[(usize::try_from(mark_info.start).expect("System is not 64bit"))
+            ..(usize::try_from(mark_info.end).expect("System is not 64bit"))];
 
         decompress_bytes(compressed, compression_type)
     }
@@ -174,7 +174,7 @@ impl TablePartInfo {
 #[derive(Debug, Clone)]
 pub struct TablePart {
     pub info: TablePartInfo,
-    pub data: Vec<Column>,
+    pub data: Vec<PhysicalColumn>,
 }
 
 impl TablePart {
@@ -185,8 +185,8 @@ impl TablePart {
     ///
     /// Returns: Self or engine error
     pub fn try_new(
-        table_def: &TableDef,
-        columns: Vec<OutputColumn>,
+        table_metadata: &TableMetadata,
+        columns: Vec<PhysicalColumn>,
         name: Option<String>,
     ) -> Result<Self> {
         if columns.is_empty() {
@@ -197,19 +197,13 @@ impl TablePart {
         }
         let name = name.unwrap_or(Uuid::now_v7().to_string());
 
-        let Some(table_config) = TABLE_DATA.get(table_def) else {
-            return Err(Error::TableNotFound);
-        };
-
-        let engine = table_config
-            .metadata
+        let engine = table_metadata
             .settings
             .engine
             .get_engine(EngineConfig::default());
-        let data = engine.order_columns(
-            columns,
-            &table_config
-                .metadata
+        let ordered_out_cols = engine.order_columns(
+            columns.into_iter().map(OutputColumn::from).collect(),
+            &table_metadata
                 .schema
                 .order_by
                 .iter()
@@ -218,29 +212,37 @@ impl TablePart {
                     source: ProjectionValue::ColumnDef(col_def.clone()),
                 })
                 .collect::<Vec<_>>(),
-            &table_config.metadata.schema.primary_key,
+            &table_metadata.schema.primary_key,
         )?;
 
-        let data = data
+        let ordered_cols: Result<Vec<_>> = ordered_out_cols
             .into_iter()
-            .map(OutputColumn::into_column)
-            .collect::<Vec<_>>();
+            .map(PhysicalColumn::try_from)
+            .collect();
+
+        let ordered_cols = ordered_cols?;
 
         let marks = generate_indexes(
-            &data,
-            &table_config.metadata.schema.primary_key,
-            table_config.metadata.settings.index_granularity,
+            &ordered_cols,
+            &table_metadata.schema.primary_key,
+            table_metadata.settings.index_granularity,
         );
-        let row_count = data[0].data.len() as u64;
+        let row_count = ordered_cols[0].data.len() as u64;
 
         let info = TablePartInfo {
             name,
             marks,
             row_count,
-            column_defs: data.iter().map(|col| col.column_def.clone()).collect(),
+            column_defs: ordered_cols
+                .iter()
+                .map(|col| col.column_def.clone())
+                .collect(),
         };
 
-        Ok(Self { info, data })
+        Ok(Self {
+            info,
+            data: ordered_cols,
+        })
     }
 
     /// Saves part data and indexes to raw directory.
@@ -249,21 +251,14 @@ impl TablePart {
     /// All files include magic bytes and CRC32 checksums.
     ///
     /// Returns: Ok or `CouldNotInsertData` on I/O failure
-    pub fn save_raw(&mut self, table_def: &TableDef) -> Result<()> {
+    pub fn save_raw(&mut self, table_def: &TableDef, index_granularity: u32) -> Result<()> {
         let raw_dir = self.get_raw_dir(table_def);
         std::fs::create_dir_all(&raw_dir)
             .map_err(|_| Error::CouldNotInsertData("Failed to create raw directory".to_string()))?;
 
-        let granularity = {
-            let Some(config) = TABLE_DATA.get(table_def) else {
-                return Err(Error::TableNotFound);
-            };
-            Ok(config.metadata.settings.index_granularity)
-        }?;
-
         for col_idx in 0..self.data.len() {
             let column_file = raw_dir.join(format!("{}.bin", self.data[col_idx].column_def.name));
-            self.write_column_with_marks(col_idx, &column_file, granularity)?;
+            self.write_column_with_marks(col_idx, &column_file, index_granularity)?;
         }
 
         self.info.write_to(table_def, true)?;
@@ -329,18 +324,18 @@ impl TablePart {
     /// Rolls back memory change on filesystem failure.
     ///
     /// Returns: Ok or `CouldNotInsertData` with rollback on failure
-    pub fn move_to_normal(self, table_def: &TableDef) -> Result<()> {
+    pub fn move_to_normal(
+        self,
+        table_def: &TableDef,
+        infos: &mut Vec<TablePartInfo>,
+    ) -> Result<()> {
         let raw_dir = self.get_raw_dir(table_def);
         let normal_dir = table_def.get_path().join(&self.info.name);
 
-        let Some(mut result) = TABLE_DATA.get_mut(table_def) else {
-            return Err(Error::TableNotFound);
-        };
-        let part_name = self.info.name.clone();
-        result.infos.push(self.info);
+        infos.push(self.info);
 
         if let Err(e) = std::fs::rename(&raw_dir, &normal_dir) {
-            result.infos.pop_if(|info| info.name == part_name);
+            infos.pop();
             return Err(Error::CouldNotInsertData(format!(
                 "Failed to move part directory: {e}"
             )));
@@ -355,11 +350,11 @@ impl TablePart {
 }
 
 fn generate_indexes(
-    columns: &[Column],
+    columns: &[PhysicalColumn],
     order_by: &[ColumnDef],
     index_granularity: u32,
 ) -> Vec<Mark> {
-    let columns_in_order_by: Vec<&Column> = columns
+    let columns_in_order_by: Vec<&PhysicalColumn> = columns
         .iter()
         .filter(|x| order_by.contains(&x.column_def))
         .collect();
@@ -379,129 +374,4 @@ fn generate_indexes(
         });
     }
     marks
-}
-
-/// Loads all table parts from filesystem into memory on startup.
-///
-/// Scans all databases and tables, loads part indexes, and populates `TABLE_DATA`.
-/// Cleans up any leftover raw directories from crashes.
-///
-/// Returns: Ok or `CouldNotInsertData` on critical failure
-pub fn load_all_parts_on_startup(db_dir: &Path) -> Result<()> {
-    info!(
-        "Loading parts from database directory: {}",
-        db_dir.display()
-    );
-
-    if !db_dir.exists() {
-        warn!("Database directory does not exist: {}", db_dir.display());
-        return Ok(());
-    }
-
-    let databases = std::fs::read_dir(db_dir).map_err(|error| {
-        Error::CouldNotInsertData(format!("Failed to read database directory: {error}"))
-    })?;
-
-    for database_entry in databases {
-        let database_entry = database_entry.map_err(|error| {
-            Error::CouldNotInsertData(format!("Failed to read database entry: {error}"))
-        })?;
-
-        let database_path = database_entry.path();
-        if !database_path.is_dir() {
-            continue;
-        }
-
-        let database_name = database_entry.file_name().to_string_lossy().to_string();
-
-        let tables = std::fs::read_dir(&database_path).map_err(|error| {
-            Error::CouldNotInsertData(format!(
-                "Failed to read tables in database {database_name}: {error}"
-            ))
-        })?;
-
-        for table_entry in tables {
-            let table_entry = table_entry.map_err(|error| {
-                Error::CouldNotInsertData(format!("Failed to read table entry: {error}"))
-            })?;
-
-            let table_path = table_entry.path();
-            if !table_path.is_dir() {
-                continue;
-            }
-
-            let table_name = table_entry.file_name().to_string_lossy().to_string();
-            let table_def = TableDef {
-                database: database_name.clone(),
-                table: table_name.clone(),
-            };
-
-            let table_metadata = TableMetadata::read_from(&table_def)?;
-
-            TABLE_DATA.insert(
-                table_def.clone(),
-                TableConfig {
-                    metadata: table_metadata,
-                    infos: Vec::new(),
-                },
-            );
-
-            let parts = std::fs::read_dir(&table_path).map_err(|error| {
-                Error::CouldNotInsertData(format!(
-                    "Failed to read parts in table {table_def}: {error}"
-                ))
-            })?;
-
-            for part_entry in parts {
-                let part_entry = part_entry.map_err(|error| {
-                    Error::CouldNotInsertData(format!("Failed to read part entry: {error}"))
-                })?;
-
-                let part_path = part_entry.path();
-                let part_name = part_entry.file_name().to_string_lossy().to_string();
-
-                if !part_path.is_dir() || part_name.starts_with('.') {
-                    continue;
-                }
-
-                if part_name == "raw" {
-                    match std::fs::remove_dir_all(&part_path) {
-                        Ok(()) => {
-                            info!("Removed raw directory for table {table_def}");
-                        }
-                        Err(e) => {
-                            warn!("Failed to remove raw directory for table {table_def}: {e}");
-                        }
-                    }
-                    continue;
-                }
-
-                if Path::new(&part_path)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("old"))
-                {
-                    warn!(
-                        "Found old part: {part_name}. Consult the logs to make the decision about removal."
-                    );
-                    continue;
-                }
-
-                match TablePartInfo::read_from(&table_def, &part_name) {
-                    Ok(info) => {
-                        let Some(mut result) = TABLE_DATA.get_mut(&table_def) else {
-                            continue;
-                        };
-                        result.infos.push(info);
-                        info!("Loaded part {part_name} for table {table_def}");
-                    }
-                    Err(e) => {
-                        warn!("Failed to load part {part_name} for table {table_def}: {e:?}");
-                    }
-                }
-            }
-        }
-    }
-
-    info!("Finished loading parts");
-    Ok(())
 }

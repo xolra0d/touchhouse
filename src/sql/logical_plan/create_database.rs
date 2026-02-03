@@ -1,9 +1,7 @@
 use sqlparser::ast::{ObjectName, ObjectNamePart};
 
-use crate::CONFIG;
 use crate::error::{Error, Result};
-use crate::sql::sql_parser::LogicalPlan;
-use crate::sql::validate_name;
+use crate::sql::{LogicalPlan, validate_name};
 
 impl LogicalPlan {
     /// Creates a database as directory.
@@ -31,18 +29,10 @@ impl LogicalPlan {
             return Err(Error::InvalidDatabaseName);
         }
 
-        let path = CONFIG.get_db_dir().join(name);
-        let exists = path.exists();
-
-        if exists && if_not_exists {
-            return Ok(Self::Skip);
-        }
-
-        if exists {
-            return Err(Error::DatabaseAlreadyExists);
-        }
-
-        Ok(Self::CreateDatabase { name: name.clone() })
+        Ok(Self::CreateDatabase {
+            name: name.clone(),
+            if_not_exists,
+        })
     }
 }
 
@@ -80,7 +70,8 @@ mod tests {
         assert_eq!(
             LogicalPlan::from_create_database(&valid, false),
             Ok(LogicalPlan::CreateDatabase {
-                name: "amsterdam_places".to_string()
+                name: "amsterdam_places".to_string(),
+                if_not_exists: false
             })
         );
 
@@ -89,7 +80,8 @@ mod tests {
         assert_eq!(
             LogicalPlan::from_create_database(&valid, false),
             Ok(LogicalPlan::CreateDatabase {
-                name: "_all_Data144".to_string()
+                name: "_all_Data144".to_string(),
+                if_not_exists: false
             })
         );
     }
