@@ -38,7 +38,7 @@ For more in-depth description `cargo doc --open`.
 
 ## Perfomance
 
-In last version (2.1) aggregation support was added. As of now, I could not find a good solution how to parallelize query execution. If perfomance is necessary, it's recommended to switch to 2.0, where queries execution was 10x times faster.
+In last version (2.1.0) aggregation support was added. As of now, I could not find a good solution how to parallelize query execution. If perfomance is necessary, it's recommended to switch to 2.0.0, where queries execution was 10x times faster.
 
 ## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
