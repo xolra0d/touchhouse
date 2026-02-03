@@ -8,14 +8,14 @@ MariaDB results:
 	* Insert:
 		Execution time: 72 ms
 	* Select:
-		Execution time: 2072 ms
+		Execution time: 2.072s
 
 TouchHouse results:
 	* Insert:
 		Execution time: 65.30 ms
 
 	* Select:
-		Execution time: 70.65 ms
+		Execution time: 602.73 ms
 
 ClickHouse results:
 	* Insert:
@@ -27,6 +27,5 @@ ClickHouse results:
 SQLite results:
 	* Insert:
 		Execution time: 20 ms
-
 	* Select:
 		Execution time: 430 ms

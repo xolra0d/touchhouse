@@ -8,10 +8,19 @@ Simple by design:
 * Single binary, no external coordination.
 * Immutability - background merges, instead of in-place updates.
 
+___
+## Modules
+- `src/main.rs` - Server entry point and connection handling
+- `src/engines/` - Database engines implementations
+- `src/sql/` - Sql parsing and execution
+- `src/storage/` - Storage specific implementations
+- `src/config.rs` - Configuration management with environment variables
+
+
 ---
 ## Performance
 
-Read in `perf_results.txt`
+Read in `perf_results.txt`.
 
 ---
 ## Column-oriented storage
