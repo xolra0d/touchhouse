@@ -71,3 +71,22 @@ pub fn decompress_bytes(
         CompressionType::None => Ok(compressed_bytes.to_vec()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{CompressionType, compress_bytes, decompress_bytes};
+
+    #[test]
+    fn compress_decompress() {
+        let bytes = b"Hello world";
+        let compression_type = CompressionType::LZ4(3);
+        assert_eq!(
+            decompress_bytes(
+                &compress_bytes(bytes, &compression_type).unwrap(),
+                &compression_type
+            )
+            .unwrap(),
+            bytes
+        );
+    }
+}

@@ -4,6 +4,8 @@ mod strategy;
 use self::aggregator::Aggregator;
 use self::strategy::Strategy;
 
+use sqlparser::ast::Expr;
+
 use crate::engines::{EngineConfig, EngineName};
 use crate::error::Result;
 use crate::sql::{
@@ -11,8 +13,7 @@ use crate::sql::{
 };
 use crate::storage::{NativeStorage, OutputColumn, StorageRead, VirtualStorage};
 
-use sqlparser::ast::Expr;
-
+/// Params to run query execution.
 struct QueryParams {
     projections: Vec<Projection>,
     filter: Option<Box<Expr>>,
@@ -25,6 +26,13 @@ struct QueryParams {
 }
 
 impl CommandRunner {
+    /// Executes SELECT operation.
+    ///
+    /// Resolves inner selects from native or virtual storage, and applies post processing.
+    ///
+    /// Returns:
+    ///   * Ok: `Vec<OutputColumn>` with success status
+    ///   * Error: `TableNotFound` or `CouldNotReadData` on failure
     pub fn select(select: SelectNode) -> Result<Vec<OutputColumn>> {
         let SelectNode {
             scan_source,

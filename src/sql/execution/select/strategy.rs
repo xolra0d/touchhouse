@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Strategy to read rows.
 #[derive(Debug, Clone)]
 pub struct Strategy {
     pub lines_to_read: usize,
@@ -34,5 +35,23 @@ impl Strategy {
 
     pub fn should_read_next_chunk(&self) -> bool {
         self.lines_to_read > self.lines_read.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Strategy;
+
+    #[test]
+    fn should_read_whole() {
+        let strategy = Strategy::new(None, 0, 123, true);
+        assert_eq!(strategy.lines_to_read, 123);
+    }
+
+    #[test]
+    fn should_read_only_part() {
+        let strategy = Strategy::new(Some(30), 10, 123, false);
+        dbg!(strategy.lines_to_read);
+        assert_eq!(strategy.lines_to_read, 40);
     }
 }

@@ -13,7 +13,7 @@ impl CommandRunner {
     /// Creates a database directory.
     ///
     /// Returns:
-    ///   * Ok: `OutputTable` with success status
+    ///   * Ok: `Vec<OutputColumn>` with success status
     ///   * Error: `InvalidDatabaseName` if directory creation fails
     pub fn create_database(name: String, if_not_exists: bool) -> Result<Vec<OutputColumn>> {
         match std::fs::create_dir(CONFIG.get_db_dir().join(name)) {

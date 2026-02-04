@@ -3,6 +3,7 @@ use sqlparser::ast::{BinaryOperator, Expr, Ident, UnaryOperator, Value as SQLVal
 use crate::error::{Error, Result};
 use crate::storage::{ColumnDef, ToValue, Value, ValueType};
 
+/// Binary operators supported.
 pub enum BinOp {
     Gt,
     Lt,
@@ -12,6 +13,8 @@ pub enum BinOp {
     NotEq,
 }
 
+/// Represents compiled filter. Uses indexes to optimize speed up filtering.
+/// Could read from `impl ToValue`.
 pub enum CompiledFilter {
     Compare {
         col_idx: usize,

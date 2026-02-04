@@ -8,7 +8,7 @@ impl LogicalPlan {
     ///
     /// Returns
     ///   * Ok when:
-    ///     1. Folder (database) already exists and `IF NOT EXISTS` is passed: `LogicalPlan::Skip`.
+    ///     1. Folder (database) already exists and if `if_not_exists`.
     ///     2. Folder (database) does not exist.
     ///   * Error when:
     ///     1. Table name was specified also (e.g., `db_name.TABLE_NAME`): `InvalidDatabaseName`.

@@ -7,6 +7,7 @@ use crate::storage::table_metadata::STANDARD_GRANULARITY;
 use crate::storage::tables::{Immutable, StorageRead, sealed};
 use crate::storage::{ColumnDef, Constraints, OutputColumn, TableSchema, ToValue};
 
+/// Represents virtual format/storage. Scans from `Vec<OutputColumn>`.
 pub struct VirtualStorage<Mode: sealed::SealedMode> {
     columns: Vec<OutputColumn>,
     granule_idx: Option<usize>,

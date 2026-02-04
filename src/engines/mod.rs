@@ -36,7 +36,7 @@ impl TryFrom<&str> for EngineName {
     }
 }
 
-/// Engine configuration. Used to configure engine before running.
+/// Engine configuration for `order_by` and `primary_key`.
 pub struct EngineConfig<'a> {
     order_by: &'a [Projection],
     primary_key: &'a [ColumnDef],

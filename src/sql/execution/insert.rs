@@ -9,7 +9,7 @@ impl CommandRunner {
     /// Which results in atomic inserts.
     ///
     /// Returns:
-    ///   * Ok: `OutputTable` with success status
+    ///   * Ok: `Vec<OutputColumn>` with success status
     ///   * Error: `TableNotFound` or `CouldNotInsertData` on failure
     pub fn insert(table_def: &TableDef, columns: Vec<PhysicalColumn>) -> Result<Vec<OutputColumn>> {
         let mut storage = NativeStorage::try_from_mut(table_def)?;

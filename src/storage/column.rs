@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 use crate::sql::{Projection, ProjectionValue};
 use crate::storage::{CompressionType, Value, ValueType, table_part::MAGIC_BYTES_COLUMN};
 
+/// Column constraints.
 #[derive(Debug, Clone, PartialEq, Serialize, RkyvSerialize, RkyvArchive, RkyvDeserialize)]
 pub struct Constraints {
     pub nullable: bool,

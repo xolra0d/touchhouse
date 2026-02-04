@@ -15,6 +15,7 @@ use std::{
 };
 use uuid::Uuid;
 
+/// Trait to allow zero-copy deserialization during filtering and aggregation.
 pub trait ToValue: PartialEq<Value> + PartialOrd<Value> + PartialEq + PartialOrd + Clone {
     fn to_value(self) -> Result<Value>;
     fn is_true(&self) -> bool;

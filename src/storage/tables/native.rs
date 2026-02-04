@@ -35,6 +35,7 @@ struct LoadedChunk {
     chunk_bytes: Vec<Vec<u8>>,
 }
 
+/// Represents native format/storage. Scans all table parts inside of `db_files`.
 pub struct NativeStorage<'a, Mode: sealed::SealedMode> {
     data_lock: LockFormat<'a>,
     loaded_chunk: Option<LoadedChunk>,
