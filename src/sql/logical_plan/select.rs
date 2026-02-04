@@ -1,14 +1,14 @@
+use sqlparser::ast::{
+    Expr, GroupByExpr, LimitClause, Offset, OrderBy, OrderByKind, Query, SelectItem, SetExpr,
+    TableFactor, Value as SQLValue,
+};
+
 use crate::error::{Error, Result};
 use crate::runtime_config::TABLE_DATA;
 use crate::sql::{
     AggregateProjection, LogicalPlan, Projection, ProjectionValue, RawProjection, ScanSource,
 };
 use crate::storage::TableDef;
-
-use sqlparser::ast::{
-    Expr, GroupByExpr, LimitClause, Offset, OrderBy, OrderByKind, Query, SelectItem, SetExpr,
-    TableFactor, Value as SQLValue,
-};
 
 impl LogicalPlan {
     /// Parses SELECT query into a logical plan tree.

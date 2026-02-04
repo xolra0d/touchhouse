@@ -1,4 +1,5 @@
 use std::sync::Arc;
+
 use touchhouse::{
     Result, accept_conn, build_logger, init_conn_semaphore, init_listener, load_existing_parts,
     log_startup_info, spawn_background_merges,

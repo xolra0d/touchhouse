@@ -1,4 +1,4 @@
-use crate::sql::sql_parser::LogicalPlan;
+use crate::sql::LogicalPlan;
 
 // mod query_flattening;
 

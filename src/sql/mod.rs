@@ -5,11 +5,11 @@ mod logical_plan;
 mod plan_optimization;
 mod sql_parser;
 
-pub use command_runner::CommandRunner;
-pub use compiled_filter::{BinOp, CompiledFilter};
-pub use sql_parser::{
-    AggregateProjection, LogicalPlan, PhysicalPlan, Projection, ProjectionValue, RawProjection,
-    ScanSource, SelectNode,
+pub use self::command_runner::CommandRunner;
+pub use self::compiled_filter::{BinOp, CompiledFilter};
+pub use self::sql_parser::{
+    AggregateFunction, AggregateProjection, LogicalPlan, PhysicalPlan, Projection, ProjectionValue,
+    RawProjection, ScanSource, SelectNode,
 };
 
 /// Validates the name of fields, databases, columns.

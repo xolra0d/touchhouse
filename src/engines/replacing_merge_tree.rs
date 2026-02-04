@@ -1,8 +1,9 @@
+use std::cmp::Ordering;
+
 use crate::engines::{Engine, EngineConfig};
 use crate::error::{Error, Result};
-use crate::sql::{Projection, ProjectionValue};
-use crate::storage::{ColumnDef, OutputColumn};
-use std::cmp::Ordering;
+use crate::sql::ProjectionValue;
+use crate::storage::OutputColumn;
 
 /// Engine for editing rows. Sorts values in ASC order.
 ///
@@ -23,18 +24,18 @@ use std::cmp::Ordering;
 /// Row0: [1, 2, 33, 42]
 /// Row1: [4, 2, 3, 4]
 /// ```
-pub struct ReplacingMergeTreeEngine {
-    _config: EngineConfig,
+pub struct ReplacingMergeTreeEngine<'a> {
+    config: EngineConfig<'a>,
 }
 
-impl ReplacingMergeTreeEngine {
+impl<'a> ReplacingMergeTreeEngine<'a> {
     /// Creates a new `ReplacingMergeTree` engine with the given configuration.
-    pub fn new(config: EngineConfig) -> Self {
-        Self { _config: config }
+    pub fn new(config: EngineConfig<'a>) -> Self {
+        Self { config }
     }
 }
 
-impl Engine for ReplacingMergeTreeEngine {
+impl Engine for ReplacingMergeTreeEngine<'_> {
     /// Orders columns and deduplicates rows by PRIMARY KEY, keeping the latest row.
     ///
     /// Sorts rows in ascending order by ORDER BY columns, then removes duplicates
@@ -43,18 +44,13 @@ impl Engine for ReplacingMergeTreeEngine {
     /// Returns:
     ///   * Ok: `Vec<OutputColumn>` with sorted and deduplicated rows.
     ///   * Error: `NoColumnsSpecified` if columns is empty.
-    fn order_columns(
-        &self,
-        mut columns: Vec<OutputColumn>,
-        order_by: &[Projection],
-        primary_key: &[ColumnDef],
-    ) -> Result<Vec<OutputColumn>> {
+    fn order_columns(&self, mut columns: Vec<OutputColumn>) -> Result<Vec<OutputColumn>> {
         let Some(total_rows) = columns.first().map(|col| col.data.len()) else {
             return Err(Error::NoColumnsSpecified);
         };
 
         let mut order_by_indexes = Vec::new();
-        for proj in order_by {
+        for proj in self.config.order_by {
             let Some(position) = columns.iter().position(|col| {
                 // if let ProjectionValue::ColumnDef(col_def) = &proj.source {
                 //     col.column_def == *col_def
@@ -69,7 +65,7 @@ impl Engine for ReplacingMergeTreeEngine {
         }
 
         let mut pk_indexes = Vec::new();
-        for pk_col_def in primary_key {
+        for pk_col_def in self.config.primary_key {
             let Some(position) = columns.iter().position(|col| {
                 if let ProjectionValue::ColumnDef(col_def) = &col.proj.source {
                     pk_col_def == col_def
@@ -126,7 +122,10 @@ impl Engine for ReplacingMergeTreeEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{ColumnDef, Constraints, Value, ValueType};
+    use crate::{
+        sql::Projection,
+        storage::{ColumnDef, Constraints, Value, ValueType},
+    };
 
     fn string_column(name: String, data: Vec<&str>) -> OutputColumn {
         OutputColumn {
@@ -140,10 +139,6 @@ mod tests {
             },
             data: data.iter().map(|x| Value::String(x.to_string())).collect(),
         }
-    }
-
-    fn get_engine() -> ReplacingMergeTreeEngine {
-        ReplacingMergeTreeEngine::new(EngineConfig::default())
     }
 
     #[test]
@@ -182,8 +177,8 @@ mod tests {
         ];
 
         assert_eq!(
-            get_engine()
-                .order_columns(vec![col_1, col_2, col_3], &order_by, &primary_key)
+            ReplacingMergeTreeEngine::new(EngineConfig::new(&order_by, &primary_key))
+                .order_columns(vec![col_1, col_2, col_3])
                 .unwrap(),
             merged
         );
@@ -224,8 +219,8 @@ mod tests {
         ];
 
         assert_eq!(
-            get_engine()
-                .order_columns(vec![col_1, col_2, col_3], &order_by, &primary_key)
+            ReplacingMergeTreeEngine::new(EngineConfig::new(&order_by, &primary_key))
+                .order_columns(vec![col_1, col_2, col_3])
                 .unwrap(),
             merged
         );

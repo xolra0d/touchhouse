@@ -1,4 +1,3 @@
-#[allow(clippy::cast_possible_truncation)]
 mod background_merge;
 mod config;
 mod engines;
@@ -8,11 +7,12 @@ mod sql;
 mod storage;
 mod tcp_io_parser;
 
-use futures::{SinkExt as _, StreamExt as _};
-use log::{error, info, warn};
 use std::fs::DirEntry;
 use std::path::Path;
 use std::sync::Arc;
+
+use futures::{SinkExt as _, StreamExt as _};
+use log::{error, info, warn};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio_util::codec::Decoder as _;
@@ -20,25 +20,27 @@ use tokio_util::codec::Decoder as _;
 use crate::background_merge::BackgroundMerge;
 use crate::config::CONFIG;
 use crate::error::Error;
+pub use crate::error::Result;
 use crate::runtime_config::{TABLE_DATA, TableConfig};
 use crate::sql::CommandRunner;
 use crate::storage::{TableDef, TableMetadata, TablePartInfo};
 use crate::tcp_io_parser::Parser;
 
-pub use crate::error::Result;
-
+/// Intitializes logger with `CONFIG::log_level` level.
 pub fn build_logger() {
     env_logger::Builder::from_default_env()
         .filter_level(CONFIG.get_log_level())
         .init();
 }
 
+/// Spawns `BackgroundMerge` process in other thread.
 pub fn spawn_background_merges() {
     std::thread::spawn(|| {
         BackgroundMerge::start();
     });
 }
 
+/// Intitializes semaphore to limit connections to `CONFIG::max_concurrent_connections`.
 pub fn init_conn_semaphore() -> Arc<Semaphore> {
     Arc::new(Semaphore::new(CONFIG.get_max_connections()))
 }
@@ -46,7 +48,7 @@ pub fn init_conn_semaphore() -> Arc<Semaphore> {
 /// Tries to initialize TCP listener.
 ///
 /// # Errors
-/// * If failes to bind to `CONFIG.get_tcp_socket_addr()`
+/// * If failes to bind to `CONFIG::tcp_socket`.
 pub async fn init_listener() -> Result<TcpListener> {
     TcpListener::bind(&CONFIG.get_tcp_socket_addr())
         .await
@@ -58,13 +60,14 @@ pub async fn init_listener() -> Result<TcpListener> {
         })
 }
 
+/// Logs startup info.
 pub fn log_startup_info() {
     info!("TCP server listening on {}", CONFIG.get_tcp_socket_addr());
     info!("Database directory: {}", CONFIG.get_db_dir().display());
     info!("Log level: {:?}", CONFIG.get_log_level());
 }
 
-/// Accepts each connection in blocking format, with max `max_conn` concurrent connections.
+/// Accepts each connection in new `tokio` thread, with max `max_conn` semaphore.
 pub async fn accept_conn(max_conn: Arc<Semaphore>, listener: &TcpListener) {
     let Ok(connection_permit) = max_conn.acquire_owned().await else {
         unreachable!()

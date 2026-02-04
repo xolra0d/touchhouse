@@ -1,25 +1,24 @@
+use std::cmp::Ordering;
+
 use crate::engines::{Engine, EngineConfig};
 use crate::error::{Error, Result};
-use crate::sql::Projection;
-use crate::storage::{ColumnDef, OutputColumn, Value};
-
-use std::cmp::Ordering;
+use crate::storage::{OutputColumn, Value};
 
 /// Standard engine for most needs.
 /// Does not perform any changes to data. Just keeps it sorted in ASC by ORDER BY
-/// If two rows have the same ORDER BY values, their positions in terms of each other are not deterministic.
-pub struct MergeTreeEngine {
-    _config: EngineConfig,
+/// If two rows have the same ORDER BY values, their positions in terms of each other is not deterministic.
+pub struct MergeTreeEngine<'a> {
+    config: EngineConfig<'a>,
 }
 
-impl MergeTreeEngine {
+impl<'a> MergeTreeEngine<'a> {
     /// Creates a new `MergeTree` engine with the given configuration.
-    pub const fn new(config: EngineConfig) -> Self {
-        Self { _config: config }
+    pub const fn new(config: EngineConfig<'a>) -> Self {
+        Self { config }
     }
 }
 
-impl Engine for MergeTreeEngine {
+impl Engine for MergeTreeEngine<'_> {
     /// Orders columns by sorting rows according to ORDER BY column definitions.
     ///
     /// Returns:
@@ -28,13 +27,8 @@ impl Engine for MergeTreeEngine {
     ///     1. ORDER BY is empty or columns is empty: `NoColumnsSpecified`.
     ///     2. Column lengths mismatch: `InvalidColumnsSpecified`.
     ///     3. ORDER BY column not found: `InvalidColumnsSpecified`.
-    fn order_columns(
-        &self,
-        mut columns: Vec<OutputColumn>,
-        order_by: &[Projection],
-        _primary_key: &[ColumnDef],
-    ) -> Result<Vec<OutputColumn>> {
-        if order_by.is_empty() || columns.is_empty() {
+    fn order_columns(&self, mut columns: Vec<OutputColumn>) -> Result<Vec<OutputColumn>> {
+        if self.config.order_by.is_empty() || columns.is_empty() {
             return Err(Error::NoColumnsSpecified);
         }
 
@@ -44,8 +38,8 @@ impl Engine for MergeTreeEngine {
             return Err(Error::InvalidColumnsSpecified);
         }
 
-        let mut order_by_indices = Vec::with_capacity(order_by.len());
-        for order_proj in order_by {
+        let mut order_by_indices = Vec::with_capacity(self.config.order_by.len());
+        for order_proj in self.config.order_by {
             let Some(idx) = columns.iter().position(|col| *order_proj == col.proj) else {
                 return Err(Error::InvalidColumnsSpecified);
             };
@@ -102,8 +96,8 @@ fn apply_permutation_in_place(data: &mut [Value], indices: &[usize]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sql::ProjectionValue;
-    use crate::storage::ValueType;
+    use crate::sql::{Projection, ProjectionValue};
+    use crate::storage::{ColumnDef, ValueType};
 
     macro_rules! value {
         (S $x:literal) => {
@@ -138,18 +132,24 @@ mod tests {
 
     #[test]
     fn test_empty() {
-        let engine = MergeTreeEngine::new(EngineConfig::default());
+        let engine = MergeTreeEngine::new(EngineConfig::new(&[], &[]));
         let columns = Vec::new();
 
         assert_eq!(
-            engine.order_columns(columns, &[], &[]).unwrap_err(),
+            engine.order_columns(columns).unwrap_err(),
             Error::NoColumnsSpecified
         );
     }
 
     #[test]
     fn test_single_row_single_column() {
-        let engine = MergeTreeEngine::new(EngineConfig::default());
+        let order_by = [Projection {
+            alias: None,
+            source: ProjectionValue::ColumnDef(str_col_def()),
+        }];
+        let primary_key = [str_col_def()];
+
+        let engine = MergeTreeEngine::new(EngineConfig::new(&order_by, &primary_key));
         let columns = vec![OutputColumn {
             proj: Projection {
                 alias: None,
@@ -158,24 +158,17 @@ mod tests {
             data: value!(S "1"),
         }];
 
-        assert_eq!(
-            engine
-                .order_columns(
-                    columns.clone(),
-                    &[Projection {
-                        alias: None,
-                        source: ProjectionValue::ColumnDef(str_col_def())
-                    }],
-                    &[str_col_def()]
-                )
-                .unwrap(),
-            columns
-        )
+        assert_eq!(engine.order_columns(columns.clone(),).unwrap(), columns)
     }
 
     #[test]
     fn test_multiple_row_single_column() {
-        let engine = MergeTreeEngine::new(EngineConfig::default());
+        let order_by = [Projection {
+            alias: None,
+            source: ProjectionValue::ColumnDef(int_col_def()),
+        }];
+        let primary_key = [int_col_def()];
+        let engine = MergeTreeEngine::new(EngineConfig::new(&order_by, &primary_key));
         let columns = vec![OutputColumn {
             proj: Projection {
                 alias: None,
@@ -185,16 +178,7 @@ mod tests {
         }];
 
         assert_eq!(
-            engine
-                .order_columns(
-                    columns.clone(),
-                    &[Projection {
-                        alias: None,
-                        source: ProjectionValue::ColumnDef(int_col_def())
-                    }],
-                    &[int_col_def()]
-                )
-                .unwrap(),
+            engine.order_columns(columns.clone()).unwrap(),
             vec![OutputColumn {
                 proj: Projection {
                     alias: None,
@@ -207,7 +191,12 @@ mod tests {
 
     #[test]
     fn test_single_row_multiple_column() {
-        let engine = MergeTreeEngine::new(EngineConfig::default());
+        let order_by = [Projection {
+            alias: None,
+            source: ProjectionValue::ColumnDef(int_col_def()),
+        }];
+        let primary_key = [int_col_def()];
+        let engine = MergeTreeEngine::new(EngineConfig::new(&order_by, &primary_key));
         let columns = vec![
             OutputColumn {
                 proj: Projection {
@@ -225,24 +214,17 @@ mod tests {
             },
         ];
 
-        assert_eq!(
-            engine
-                .order_columns(
-                    columns.clone(),
-                    &[Projection {
-                        alias: None,
-                        source: ProjectionValue::ColumnDef(int_col_def())
-                    }],
-                    &[int_col_def()]
-                )
-                .unwrap(),
-            columns
-        );
+        assert_eq!(engine.order_columns(columns.clone()).unwrap(), columns);
     }
 
     #[test]
     fn test_multiple_row_multiple_column_eq() {
-        let engine = MergeTreeEngine::new(EngineConfig::default());
+        let order_by = [Projection {
+            alias: None,
+            source: ProjectionValue::ColumnDef(int_col_def()),
+        }];
+        let primary_key = [int_col_def()];
+        let engine = MergeTreeEngine::new(EngineConfig::new(&order_by, &primary_key));
         let columns = vec![
             OutputColumn {
                 proj: Projection {
@@ -261,16 +243,7 @@ mod tests {
         ];
 
         assert_eq!(
-            engine
-                .order_columns(
-                    columns.clone(),
-                    &[Projection {
-                        alias: None,
-                        source: ProjectionValue::ColumnDef(int_col_def())
-                    }],
-                    &[int_col_def()]
-                )
-                .unwrap(),
+            engine.order_columns(columns.clone()).unwrap(),
             vec![
                 OutputColumn {
                     proj: Projection {
@@ -292,7 +265,18 @@ mod tests {
 
     #[test]
     fn test_multiple_row_multiple_column_not_eq() {
-        let engine = MergeTreeEngine::new(EngineConfig::default());
+        let order_by = [
+            Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(int_col_def()),
+            },
+            Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(str_col_def()),
+            },
+        ];
+        let primary_key = [int_col_def(), str_col_def()];
+        let engine = MergeTreeEngine::new(EngineConfig::new(&order_by, &primary_key));
         let columns = vec![
             OutputColumn {
                 proj: Projection {
@@ -311,22 +295,7 @@ mod tests {
         ];
 
         assert_eq!(
-            engine
-                .order_columns(
-                    columns.clone(),
-                    &[
-                        Projection {
-                            alias: None,
-                            source: ProjectionValue::ColumnDef(int_col_def())
-                        },
-                        Projection {
-                            alias: None,
-                            source: ProjectionValue::ColumnDef(str_col_def())
-                        },
-                    ],
-                    &[int_col_def(), str_col_def()]
-                )
-                .unwrap(),
+            engine.order_columns(columns.clone()).unwrap(),
             vec![
                 OutputColumn {
                     proj: Projection {

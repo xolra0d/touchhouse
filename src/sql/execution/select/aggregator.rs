@@ -1,12 +1,10 @@
-use std::{collections::HashMap, f64};
+use std::collections::HashMap;
 
 use sqlparser::ast::Expr;
 
-use crate::{
-    error::{Error, Result},
-    sql::{AggregateProjection, Projection, ProjectionValue, sql_parser::AggregateFunction},
-    storage::{OutputColumn, ToValue, Value},
-};
+use crate::error::{Error, Result};
+use crate::sql::{AggregateFunction, AggregateProjection, Projection, ProjectionValue};
+use crate::storage::{OutputColumn, ToValue, Value};
 
 #[derive(Debug, Clone)]
 enum RawData {

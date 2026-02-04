@@ -1,6 +1,7 @@
+use sqlparser::ast::{BinaryOperator, Expr, Ident, UnaryOperator, Value as SQLValue};
+
 use crate::error::{Error, Result};
 use crate::storage::{ColumnDef, ToValue, Value, ValueType};
-use sqlparser::ast::{BinaryOperator, Expr, Ident, UnaryOperator, Value as SQLValue};
 
 pub enum BinOp {
     Gt,

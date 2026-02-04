@@ -197,23 +197,21 @@ impl TablePart {
         }
         let name = name.unwrap_or(Uuid::now_v7().to_string());
 
-        let engine = table_metadata
-            .settings
-            .engine
-            .get_engine(EngineConfig::default());
-        let ordered_out_cols = engine.order_columns(
-            columns.into_iter().map(OutputColumn::from).collect(),
-            &table_metadata
-                .schema
-                .order_by
-                .iter()
-                .map(|col_def| Projection {
-                    alias: None,
-                    source: ProjectionValue::ColumnDef(col_def.clone()),
-                })
-                .collect::<Vec<_>>(),
+        let order_by = table_metadata
+            .schema
+            .order_by
+            .iter()
+            .map(|col_def| Projection {
+                alias: None,
+                source: ProjectionValue::ColumnDef(col_def.clone()),
+            })
+            .collect::<Vec<_>>();
+        let engine = table_metadata.settings.engine.get_engine(EngineConfig::new(
+            &order_by,
             &table_metadata.schema.primary_key,
-        )?;
+        ));
+        let ordered_out_cols =
+            engine.order_columns(columns.into_iter().map(OutputColumn::from).collect())?;
 
         let ordered_cols: Result<Vec<_>> = ordered_out_cols
             .into_iter()

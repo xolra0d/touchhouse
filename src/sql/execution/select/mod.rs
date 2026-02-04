@@ -1,13 +1,14 @@
 mod aggregator;
 mod strategy;
 
-use aggregator::Aggregator;
-use strategy::Strategy;
+use self::aggregator::Aggregator;
+use self::strategy::Strategy;
 
 use crate::engines::{EngineConfig, EngineName};
 use crate::error::Result;
-use crate::sql::{AggregateProjection, Projection, ScanSource, SelectNode};
-use crate::sql::{CommandRunner, CompiledFilter};
+use crate::sql::{
+    AggregateProjection, CommandRunner, CompiledFilter, Projection, ScanSource, SelectNode,
+};
 use crate::storage::{NativeStorage, OutputColumn, StorageRead, VirtualStorage};
 
 use sqlparser::ast::Expr;
@@ -121,8 +122,11 @@ impl CommandRunner {
             for order_by in order_by_vec {
                 // todo: if final is specified, use table engine
                 output_columns = EngineName::default()
-                    .get_engine(EngineConfig::default())
-                    .order_columns(output_columns, &order_by, &storage.get_schema().primary_key)?;
+                    .get_engine(EngineConfig::new(
+                        &order_by,
+                        &storage.get_schema().primary_key,
+                    ))
+                    .order_columns(output_columns)?;
             }
         }
 

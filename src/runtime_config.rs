@@ -1,5 +1,6 @@
-use dashmap::DashMap;
 use std::sync::atomic::AtomicUsize;
+
+use dashmap::DashMap;
 
 use crate::storage::{TableDef, TableMetadata, TablePartInfo};
 

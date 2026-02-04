@@ -1,7 +1,8 @@
+use sqlparser::ast::{ObjectName, ObjectNamePart, ObjectType};
+
 use crate::error::{Error, Result};
 use crate::sql::LogicalPlan;
 use crate::storage::TableDef;
-use sqlparser::ast::{ObjectName, ObjectNamePart, ObjectType};
 
 impl LogicalPlan {
     /// Parses DROP statement into a logical plan.

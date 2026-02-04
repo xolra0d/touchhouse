@@ -1,8 +1,9 @@
+use std::collections::HashSet;
+
 use sqlparser::ast::{
     ColumnOption, ColumnOptionDef, CreateTable, CreateTableOptions, Expr, Ident,
     OneOrManyWithParens, SqlOption,
 };
-use std::collections::HashSet;
 
 use crate::engines::EngineName;
 use crate::error::{Error, Result};

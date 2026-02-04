@@ -1,3 +1,6 @@
+use dashmap::Entry;
+use log::error;
+
 use crate::config::CONFIG;
 use crate::error::{Error, Result};
 use crate::runtime_config::{TABLE_DATA, TableConfig};
@@ -5,9 +8,6 @@ use crate::sql::CommandRunner;
 use crate::storage::{
     ColumnDef, OutputColumn, TableDef, TableMetadata, TableSchema, TableSettings,
 };
-
-use dashmap::Entry;
-use log::error;
 
 impl CommandRunner {
     /// Creates a database directory.

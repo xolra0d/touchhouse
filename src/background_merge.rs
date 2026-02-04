@@ -1,16 +1,16 @@
-use crate::error::Result;
-use crate::sql::Projection;
-use crate::storage::{NativeStorage, StorageRead, TablePart, ToValue, Value};
-
-use std::{cmp::Ordering, time::Duration};
+use std::cmp::Ordering;
+use std::time::Duration;
 
 use log::{error, info, warn};
 use uuid::Uuid;
 
-use crate::{
-    config::CONFIG,
-    runtime_config::{DATABASE_LOAD, TABLE_DATA},
-    storage::{PhysicalColumn, TableDef, TableMetadata, TablePartInfo},
+use crate::config::CONFIG;
+use crate::error::Result;
+use crate::runtime_config::{DATABASE_LOAD, TABLE_DATA};
+use crate::sql::Projection;
+use crate::storage::{
+    NativeStorage, PhysicalColumn, StorageRead, TableDef, TableMetadata, TablePart, TablePartInfo,
+    ToValue, Value,
 };
 
 const SLEEP_IF_NOT_FOUND: Duration = Duration::from_secs(5);

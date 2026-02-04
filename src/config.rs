@@ -1,7 +1,8 @@
-use serde::{Deserialize, Serialize};
 use std::io::ErrorKind;
 use std::net::SocketAddrV4;
 use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 /// Global static to access server configuration
 pub static CONFIG: std::sync::LazyLock<Config> = std::sync::LazyLock::new(Config::build);
